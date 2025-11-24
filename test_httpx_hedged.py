@@ -15,8 +15,8 @@ from httpx_hedged import (
     LatencyTracker,
     PercentileHedgingClient,
     PercentileHedgingTransport,
-    SLOHedgingClient,
-    SLOHedgingTransport,
+    HedgingClient,
+    HedgingTransport,
 )
 
 
@@ -130,59 +130,35 @@ class TestLatencyTracker:
         assert len(tracker.latencies) == 0
 
 
-class TestSLOHedgingTransport:
-    """Tests for SLOHedgingTransport."""
+class TestHedgingTransport:
+    """Tests for HedgingTransport."""
 
     @pytest.mark.asyncio
     async def test_initialization(self):
         """Test transport initialization."""
         mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
 
-        transport = SLOHedgingTransport(
+        transport = HedgingTransport(
             transport=mock_transport, target_slo=2.0, hedge_at=0.9, max_hedges=3
         )
 
         assert transport.target_slo == 2.0
         assert transport.hedge_at == 0.9
         assert transport.max_hedges == 3
-        assert transport.use_adaptive_slo is True
-        assert transport.latency_tracker is not None
 
     @pytest.mark.asyncio
     async def test_hedge_delay_calculation_fixed(self, mock_request):
         """Test hedge delay calculation with fixed SLO."""
         mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
 
-        transport = SLOHedgingTransport(
+        transport = HedgingTransport(
             transport=mock_transport,
             target_slo=1.0,
             hedge_at=0.95,
-            use_adaptive_slo=False,
         )
 
         delay = transport._get_hedge_delay(mock_request)
         assert delay == 0.95  # 1.0 * 0.95
-
-    @pytest.mark.asyncio
-    async def test_hedge_delay_calculation_adaptive(self, mock_request):
-        """Test hedge delay calculation with adaptive SLO."""
-        mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
-
-        transport = SLOHedgingTransport(
-            transport=mock_transport,
-            target_slo=2.0,
-            hedge_at=0.9,
-            use_adaptive_slo=True,
-        )
-
-        # Record some latencies to learn from
-        endpoint = transport._get_endpoint_key(mock_request)
-        for i in range(20):
-            transport.latency_tracker.record(endpoint, 0.5)
-
-        # Should now use learned SLO (~0.5) instead of target (2.0)
-        delay = transport._get_hedge_delay(mock_request)
-        assert delay < 1.0  # Should be much less than 2.0 * 0.9 = 1.8
 
     @pytest.mark.asyncio
     async def test_single_request_success(self, mock_request, mock_response):
@@ -190,7 +166,7 @@ class TestSLOHedgingTransport:
         mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
         mock_transport.handle_async_request = AsyncMock(return_value=mock_response)
 
-        transport = SLOHedgingTransport(
+        transport = HedgingTransport(
             transport=mock_transport, target_slo=1.0, hedge_at=0.95, max_hedges=2
         )
 
@@ -225,7 +201,7 @@ class TestSLOHedgingTransport:
         mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
         mock_transport.handle_async_request = track_calls
 
-        transport = SLOHedgingTransport(
+        transport = HedgingTransport(
             transport=mock_transport,
             target_slo=0.2,  # 200ms SLO
             hedge_at=0.75,  # Hedge at 150ms
@@ -240,52 +216,6 @@ class TestSLOHedgingTransport:
         # Verify hedge was sent at approximately the right time
         hedge_time = call_times[1] - call_times[0]
         assert 0.12 <= hedge_time <= 0.18  # ~150ms with some tolerance
-
-    @pytest.mark.asyncio
-    async def test_latency_recording(self, mock_request, mock_response):
-        """Test that latencies are recorded for adaptive SLO."""
-        mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
-
-        async def slow_response(*args, **kwargs):
-            await asyncio.sleep(0.1)
-            return mock_response
-
-        mock_transport.handle_async_request = slow_response
-
-        transport = SLOHedgingTransport(
-            transport=mock_transport,
-            target_slo=1.0,
-            hedge_at=0.95,
-            use_adaptive_slo=True,
-        )
-
-        endpoint = transport._get_endpoint_key(mock_request)
-
-        # Make request
-        await transport.handle_async_request(mock_request)
-
-        # Check that latency was recorded
-        assert endpoint in transport.latency_tracker.latencies
-        assert len(transport.latency_tracker.latencies[endpoint]) == 1
-
-    @pytest.mark.asyncio
-    async def test_endpoint_key_generation(self):
-        """Test endpoint key generation."""
-        mock_transport = AsyncMock(spec=httpx.AsyncBaseTransport)
-        transport = SLOHedgingTransport(transport=mock_transport, target_slo=1.0)
-
-        request1 = httpx.Request("GET", "https://api.example.com/users")
-        request2 = httpx.Request("POST", "https://api.example.com/users")
-        request3 = httpx.Request("GET", "https://api.example.com/posts")
-
-        key1 = transport._get_endpoint_key(request1)
-        key2 = transport._get_endpoint_key(request2)
-        key3 = transport._get_endpoint_key(request3)
-
-        # Same path should give same key regardless of method
-        assert key1 == key2
-        # Different path should give different key
-        assert key1 != key3
 
 
 class TestPercentileHedgingTransport:
@@ -302,7 +232,6 @@ class TestPercentileHedgingTransport:
 
         assert transport.target_slo == 1.0
         assert transport.hedge_points == [0.5, 0.75, 0.95]
-        assert transport.latency_tracker is not None
 
     @pytest.mark.asyncio
     async def test_hedge_points_sorting(self):
@@ -338,7 +267,6 @@ class TestPercentileHedgingTransport:
             transport=mock_transport,
             target_slo=1.0,
             hedge_points=[0.5, 0.75, 0.95],
-            use_adaptive_slo=False,
         )
 
         delays = transport._get_hedge_delays(mock_request)
@@ -381,15 +309,15 @@ class TestPercentileHedgingTransport:
         assert len(call_times) == 3
 
 
-class TestSLOHedgingClient:
-    """Tests for SLOHedgingClient."""
+class TestHedgingClient:
+    """Tests for HedgingClient."""
 
     @pytest.mark.asyncio
     async def test_client_initialization(self):
         """Test client initialization."""
-        client = SLOHedgingClient(target_slo=0.5, hedge_at=0.9, max_hedges=2)
+        client = HedgingClient(target_slo=0.5, hedge_at=0.9, max_hedges=2)
 
-        assert isinstance(client._transport, SLOHedgingTransport)
+        assert isinstance(client._transport, HedgingTransport)
         assert client._transport.target_slo == 0.5
         assert client._transport.hedge_at == 0.9
         assert client._transport.max_hedges == 2
@@ -399,9 +327,9 @@ class TestSLOHedgingClient:
     @pytest.mark.asyncio
     async def test_client_context_manager(self):
         """Test client works as context manager."""
-        async with SLOHedgingClient(target_slo=1.0) as client:
+        async with HedgingClient(target_slo=1.0) as client:
             assert isinstance(client, httpx.AsyncClient)
-            assert isinstance(client._transport, SLOHedgingTransport)
+            assert isinstance(client._transport, HedgingTransport)
 
 
 class TestPercentileHedgingClient:
@@ -426,7 +354,7 @@ class TestIntegration:
     @pytest.mark.integration
     async def test_real_request_slo(self):
         """Test with a real HTTP request."""
-        async with SLOHedgingClient(
+        async with HedgingClient(
             target_slo=0.5, hedge_at=0.9, max_hedges=1, timeout=5.0
         ) as client:
             response = await client.get("https://httpbin.org/get")
@@ -441,24 +369,6 @@ class TestIntegration:
         ) as client:
             response = await client.get("https://httpbin.org/get")
             assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_adaptive_slo_learning(self):
-        """Test that adaptive SLO learns from requests."""
-        async with SLOHedgingClient(
-            target_slo=2.0, hedge_at=0.9, use_adaptive_slo=True, timeout=5.0
-        ) as client:
-            # Make several requests
-            for _ in range(3):
-                await client.get("https://httpbin.org/delay/0.5")
-
-            # Transport should have learned latencies
-            transport = client._transport
-            endpoint = "httpbin.org/delay"
-
-            assert endpoint in transport.latency_tracker.latencies
-            assert len(transport.latency_tracker.latencies[endpoint]) == 3
 
 
 if __name__ == "__main__":

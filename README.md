@@ -1,16 +1,15 @@
-# HTTPX Request Hedging Plugin
+# HTTPX Request Hedging
 
-An intelligent [httpx](https://www.python-httpx.org/) plugin that implements request hedging. Based on [The Tail at Scale](https://research.google/pubs/pub40801/)
-
+A [httpx](https://www.python-httpx.org/) plugin that implements request hedging. Based on [The Tail at Scale](https://research.google/pubs/pub40801/)
 
 ### Basic SLO-Based Hedging
 
 ```python
 import asyncio
-from httpx_hedging_slo import SLOHedgingClient
+from httpx_hedged import HedgingClient
 
 async def main():
-    async with SLOHedgingClient(
+    async with HedgingClient(
         target_slo=1.0,   # 1 second SLO
         hedge_at=0.95,    # Hedge at 95% of SLO (950ms)
         max_hedges=1      # Send 1 additional hedged request
@@ -26,7 +25,7 @@ asyncio.run(main())
 For maximum tail latency reduction, hedge at multiple percentiles:
 
 ```python
-from httpx_hedging_slo import PercentileHedgingClient
+from httpx_hedged import PercentileHedgingClient
 
 async with PercentileHedgingClient(
     target_slo=1.0,
@@ -42,15 +41,13 @@ This sends hedged requests at:
 
 ## Configuration
 
-### SLOHedgingTransport / SLOHedgingClient
+### HedgingTransport / HedgingClient
 
 ```python
-SLOHedgingClient(
+HedgingClient(
     target_slo=1.0,           # Target latency SLO in seconds
     hedge_at=0.95,            # Hedge at this fraction of SLO (0-1)
     max_hedges=1,             # Maximum hedged requests
-    use_adaptive_slo=True,    # Learn per-endpoint SLOs
-    cancel_on_success=True,   # Cancel pending requests on success
     **kwargs                  # Standard httpx.AsyncClient args
 )
 ```
@@ -61,8 +58,6 @@ SLOHedgingClient(
 PercentileHedgingClient(
     target_slo=1.0,              # Target latency SLO in seconds
     hedge_points=[0.5, 0.75, 0.95],  # Hedge at these percentiles
-    use_adaptive_slo=True,       # Learn per-endpoint SLOs
-    cancel_on_success=True,      # Cancel pending requests on success
     **kwargs                     # Standard httpx.AsyncClient args
 )
 ```
@@ -88,60 +83,14 @@ Set `target_slo` based on your actual service level objectives:
 
 ```python
 # API with 1s p99 latency requirement
-SLOHedgingClient(target_slo=1.0, hedge_at=0.95)
+HedgingClient(target_slo=1.0, hedge_at=0.95)
 
 # Low-latency service with 100ms requirement
-SLOHedgingClient(target_slo=0.1, hedge_at=0.9)
+HedgingClient(target_slo=0.1, hedge_at=0.9)
 
 # Backend service with 500ms target
-SLOHedgingClient(target_slo=0.5, hedge_at=0.95)
+HedgingClient(target_slo=0.5, hedge_at=0.95)
 ```
-
-### Choosing hedge_at
-
-The `hedge_at` parameter controls when to hedge as a fraction of the SLO:
-
-- **0.95 (recommended)**: Conservative, hedges near SLO deadline
-- **0.90**: Balanced approach
-- **0.75**: Aggressive, hedges earlier for maximum protection
-- **0.50**: Very aggressive, effectively doubles request rate
-
-### When to Use Adaptive SLO
-
-**Use adaptive SLO (default) when:**
-- ✅ Calling multiple different endpoints
-- ✅ Latencies vary significantly between endpoints
-- ✅ You want automatic optimization
-- ✅ You're okay with a learning period
-
-**Disable adaptive SLO when:**
-- ❌ You need predictable, consistent hedge timing
-- ❌ Making requests to a single endpoint
-- ❌ Latencies are very stable
-- ❌ You want explicit control
-
-```python
-# Disable adaptive for consistent behavior
-SLOHedgingClient(
-    target_slo=1.0,
-    hedge_at=0.95,
-    use_adaptive_slo=False
-)
-```
-
-### Choosing Between Single and Percentile Hedging
-
-**Single Hedge Point** (`SLOHedgingClient`):
-- Simpler configuration
-- Lower overhead
-- Good for most use cases
-- Use when: You want protection against tail latency with minimal load increase
-
-**Percentile Hedging** (`PercentileHedgingClient`):
-- Maximum tail latency reduction
-- Higher request volume
-- More complex behavior
-- Use when: Tail latency is critical and you can afford the load
 
 ## Advanced Usage
 
@@ -149,7 +98,7 @@ SLOHedgingClient(
 
 ```python
 import httpx
-from httpx_hedging_slo import SLOHedgingTransport
+from httpx_hedged import HedgingTransport
 
 # Configure base transport
 base_transport = httpx.AsyncHTTPTransport(
@@ -159,7 +108,7 @@ base_transport = httpx.AsyncHTTPTransport(
 )
 
 # Wrap with SLO hedging
-hedging_transport = SLOHedgingTransport(
+hedging_transport = HedgingTransport(
     transport=base_transport,
     target_slo=0.5,
     hedge_at=0.95,
@@ -171,31 +120,12 @@ async with httpx.AsyncClient(transport=hedging_transport) as client:
     response = await client.get("https://api.example.com")
 ```
 
-### Monitoring Learned SLOs
-
-```python
-client = SLOHedgingClient(target_slo=1.0, use_adaptive_slo=True)
-
-async with client:
-    # Make some requests
-    await client.get("https://api.example.com/users")
-    await client.get("https://api.example.com/posts")
-
-    # Inspect learned SLOs
-    transport = client._transport
-    tracker = transport.latency_tracker
-
-    for endpoint, latencies in tracker.latencies.items():
-        slo = tracker.get_slo(endpoint, default=1.0)
-        print(f"{endpoint}: learned SLO = {slo:.3f}s")
-```
-
 ### Conditional Hedging
 
 ```python
-from httpx_hedging_slo import SLOHedgingTransport
+from httpx_hedged import HedgingTransport
 
-class ConditionalSLOHedging(SLOHedgingTransport):
+class ConditionalHedging(HedgingTransport):
     async def handle_async_request(self, request):
         # Only hedge read operations
         if request.method in ["GET", "HEAD"]:

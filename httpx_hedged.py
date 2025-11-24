@@ -24,7 +24,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-class SLOHedgingTransport(httpx.AsyncBaseTransport):
+class HedgingTransport(httpx.AsyncBaseTransport):
     """
     Asynchronous transport wrapper that implements SLO-based request hedging.
 
@@ -135,7 +135,7 @@ class PercentileHedgingTransport(httpx.AsyncBaseTransport):
     Args:
         transport: The underlying async httpx transport to wrap
         target_slo: Target latency SLO in seconds (default: 1.0)
-        hedge_points: List of percentiles at which to hedge (default: [0.5, 0.75, 0.95])
+        hedge_points: List of percentiles at which to hedge
     """
 
     def __init__(
@@ -146,14 +146,13 @@ class PercentileHedgingTransport(httpx.AsyncBaseTransport):
     ):
         self.transport = transport
         self.target_slo = target_slo
-        self.hedge_points = hedge_points or [0.5, 0.75, 0.95]
+        self.hedge_points = hedge_points
 
         # Validate hedge points
         for point in self.hedge_points:
             if not 0 < point < 1:
                 raise ValueError(f"Hedge points must be between 0 and 1, got {point}")
 
-        # Sort hedge points
         self.hedge_points = sorted(self.hedge_points)
 
     def _get_endpoint_key(self, request: httpx.Request) -> str:
@@ -260,7 +259,7 @@ class SLOHedgingClient(httpx.AsyncClient):
         **kwargs,
     ):
         transport = kwargs.pop("transport", httpx.AsyncHTTPTransport())
-        hedging_transport = SLOHedgingTransport(
+        hedging_transport = HedgingTransport(
             transport=transport,
             target_slo=target_slo,
             hedge_at=hedge_at,
