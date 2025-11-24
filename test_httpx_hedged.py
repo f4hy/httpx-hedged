@@ -12,11 +12,11 @@ import httpx
 import pytest
 
 from httpx_hedged import (
+    HedgingClient,
+    HedgingTransport,
     LatencyTracker,
     PercentileHedgingClient,
     PercentileHedgingTransport,
-    HedgingClient,
-    HedgingTransport,
 )
 
 
