@@ -17,7 +17,6 @@ Usage:
 
 import asyncio
 import logging
-import time
 
 import httpx
 
@@ -25,17 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 class HedgingTransport(httpx.AsyncBaseTransport):
-    """
-    Asynchronous transport wrapper that implements SLO-based request hedging.
-
-    Hedges requests when they approach their target latency SLO rather than
-    using fixed delays. This provides intelligent, adaptive hedging.
+    """Asynchronous transport wrapper that implements request hedging.
 
     Args:
         transport: The underlying async httpx transport to wrap
         target_slo: Target latency SLO in seconds (default: 1.0)
         hedge_at: Hedge when request reaches this fraction of SLO (default: 0.95)
-        max_hedges: Maximum number of hedged requests to send (default: 1)
     """
 
     def __init__(
@@ -43,20 +37,11 @@ class HedgingTransport(httpx.AsyncBaseTransport):
         transport: httpx.AsyncBaseTransport,
         target_slo: float = 1.0,
         hedge_at: float = 0.95,
-        max_hedges: int = 1,
     ):
         self.transport = transport
         self.target_slo = target_slo
         self.hedge_at = hedge_at
-        self.max_hedges = max_hedges
-
-    def _get_hedge_delay(self, request: httpx.Request) -> float:
-        """
-        Calculate the hedge delay for a request based on SLO.
-
-        Returns the time to wait before sending a hedged request.
-        """
-        return self.target_slo * self.hedge_at
+        self.hedge_delay = self.target_slo * self.hedge_at
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """
@@ -65,33 +50,26 @@ class HedgingTransport(httpx.AsyncBaseTransport):
         Sends initial request, then sends additional hedged requests when
         approaching the SLO threshold if the original hasn't completed yet.
         """
-        hedge_delay = self._get_hedge_delay(request)
-
-        # Track all request tasks
         tasks = []
 
         async def send_request(
-            request: httpx.Request, hedge_number: int
+            request: httpx.Request,
         ) -> tuple[httpx.Response, int, float]:
             """Send a request and return response with hedge number and start time."""
-            req_start = time.time()
             response = await self.transport.handle_async_request(request)
-            return response, hedge_number, req_start
+            return response
 
-        # Send initial request
         initial_task = asyncio.create_task(send_request(request, 0))
         tasks.append(initial_task)
 
         # Create hedging tasks that will be started after delays
-        async def delayed_hedge(delay: float, hedge_num: int):
+        async def delayed_hedge(delay: float):
             """Wait for delay, then send hedged request."""
             await asyncio.sleep(delay)
-            return await send_request(request, hedge_num)
+            return await send_request(request)
 
-        # Schedule hedged requests at multiples of hedge_delay
-        for i in range(1, self.max_hedges + 1):
-            hedge_task = asyncio.create_task(delayed_hedge(hedge_delay * i, i))
-            tasks.append(hedge_task)
+        hedge_task = asyncio.create_task(delayed_hedge(self.hedge_delay))
+        tasks.append(hedge_task)
 
         try:
             # Wait for first request to complete
@@ -101,7 +79,7 @@ class HedgingTransport(httpx.AsyncBaseTransport):
 
             # Get the first completed response
             completed_task = done.pop()
-            response, _hedge_number, _req_start = await completed_task
+            response = await completed_task
 
             # Cancel remaining tasks if configured
             if pending:
@@ -155,13 +133,8 @@ class PercentileHedgingTransport(httpx.AsyncBaseTransport):
 
         self.hedge_points = sorted(self.hedge_points)
 
-    def _get_endpoint_key(self, request: httpx.Request) -> str:
-        """Get a unique key for an endpoint (host + path)."""
-        return f"{request.url.host}{request.url.path}"
-
     def _get_hedge_delays(self, request: httpx.Request) -> list[float]:
-        """
-        Calculate hedge delays for a request based on SLO and percentiles.
+        """Calculate hedge delays for a request based on SLO and percentiles.
 
         Returns a list of delays, one for each hedge point.
         """
@@ -169,11 +142,7 @@ class PercentileHedgingTransport(httpx.AsyncBaseTransport):
         return [slo * point for point in self.hedge_points]
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        """
-        Handle request with multi-percentile hedging strategy.
-        """
-        start_time = time.time()
-        endpoint = self._get_endpoint_key(request)
+        """Handle request with multi-percentile hedging strategy."""
 
         # Calculate hedge delays based on SLO
         hedge_delays = self._get_hedge_delays(request)
@@ -212,11 +181,6 @@ class PercentileHedgingTransport(httpx.AsyncBaseTransport):
             # Get the first completed response
             completed_task = done.pop()
             response, _hedge_number = await completed_task
-
-            # Record latency for adaptive SLO
-            if self.use_adaptive_slo and self.latency_tracker:
-                total_latency = time.time() - start_time
-                self.latency_tracker.record(endpoint, total_latency)
 
             if pending:
                 for task in pending:
@@ -283,7 +247,6 @@ class PercentileHedgingClient(httpx.AsyncClient):
         self,
         target_slo: float,
         hedge_points: list[float],
-        use_adaptive_slo: bool = True,
         **kwargs,
     ):
         transport = kwargs.pop("transport", httpx.AsyncHTTPTransport())
@@ -291,6 +254,5 @@ class PercentileHedgingClient(httpx.AsyncClient):
             transport=transport,
             target_slo=target_slo,
             hedge_points=hedge_points,
-            use_adaptive_slo=use_adaptive_slo,
         )
         super().__init__(transport=hedging_transport, **kwargs)
