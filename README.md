@@ -12,7 +12,6 @@ async def main():
     async with HedgingClient(
         target_slo=1.0,   # 1 second SLO
         hedge_at=0.95,    # Hedge at 95% of SLO (950ms)
-        max_hedges=1      # Send 1 additional hedged request
     ) as client:
         response = await client.get("https://api.example.com/data")
         print(response.json())
@@ -47,7 +46,6 @@ This sends hedged requests at:
 HedgingClient(
     target_slo=1.0,           # Target latency SLO in seconds
     hedge_at=0.95,            # Hedge at this fraction of SLO (0-1)
-    max_hedges=1,             # Maximum hedged requests
     **kwargs                  # Standard httpx.AsyncClient args
 )
 ```
