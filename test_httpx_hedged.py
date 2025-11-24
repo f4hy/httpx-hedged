@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from httpx_hedging import (
+from httpx_hedged import (
     LatencyTracker,
     PercentileHedgingClient,
     PercentileHedgingTransport,
