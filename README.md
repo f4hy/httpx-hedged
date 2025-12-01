@@ -78,6 +78,7 @@ t=1.1s:   Hedge #1 completes ✓
 - [The Tail at Scale](https://research.google/pubs/pub40801/) - Google's paper on tail latency
 - [SLO Design Principles](https://sre.google/workbook/implementing-slos/) - Google SRE
 - [httpx documentation](https://www.python-httpx.org/)
+- [gRPC request hedging](https://grpc.io/docs/guides/request-hedging/)
 
 ## License
 
