@@ -2,77 +2,49 @@
 
 A [httpx](https://www.python-httpx.org/) plugin that implements request hedging. Based on [The Tail at Scale](https://research.google/pubs/pub40801/)
 
-### Basic SLO-Based Hedging
-
+Example:
 ```python
 import asyncio
-from httpx_hedged import HedgingClient
+import httpx
+from httpx_hedged import HedgingTransport
 
 async def main():
-    async with HedgingClient(
-        target_slo=1.0,   # 1 second SLO
-        hedge_at=0.95,    # Hedge at 95% of SLO (950ms)
-    ) as client:
-        response = await client.get("https://api.example.com/data")
+    # construct the hedging transport
+    transport = HedgingTransport(
+        transport=httpx.AsyncHTTPTransport()
+        hedging_delay=1.0 # hedge at 1 second
+    )
+    async with httpx.Client(transport=transport) as client:
+        response = await client.get("https://www.httpbin.org/delay/2")
         print(response.json())
 
 asyncio.run(main())
 ```
 
-### Percentile-Based Hedging
 
-For maximum tail latency reduction, hedge at multiple percentiles:
+## Hedging Transport
 
-```python
-from httpx_hedged import PercentileHedgingClient
-
-async with PercentileHedgingClient(
-    target_slo=1.0,
-    hedge_points=[0.5, 0.75, 0.95],  # Hedge at p50, p75, p95
-) as client:
-    response = await client.get("https://api.example.com/data")
-```
-
-This sends hedged requests at:
-- 500ms (p50 of 1s SLO)
-- 750ms (p75 of 1s SLO)
-- 950ms (p95 of 1s SLO)
-
-## Configuration
-
-### HedgingTransport / HedgingClient
+Use the `HedgingTransport` to hedge requests at the specified `hedging_delay`.
 
 ```python
-HedgingClient(
-    target_slo=1.0,           # Target latency SLO in seconds
-    hedge_at=0.95,            # Hedge at this fraction of SLO (0-1)
-    **kwargs                  # Standard httpx.AsyncClient args
+transport = HedgingTransport(
+    transport=httpx.AsyncHTTPTransport()
+    hedging_delay=1.0 # hedge at 1 second
 )
 ```
 
-### PercentileHedgingTransport / PercentileHedgingClient
+`hedging_delay` also accepts a list of delays if multiple are needed.
 
 ```python
-PercentileHedgingClient(
-    target_slo=1.0,              # Target latency SLO in seconds
-    hedge_points=[0.5, 0.75, 0.95],  # Hedge at these percentiles
-    **kwargs                     # Standard httpx.AsyncClient args
+transport = HedgingTransport(
+    transport = httpx.AsyncHTTPTransport(),
+    hedging_delay=[0.250, 0.500, 0.750] # hedge at 250ms, 500ms and 750ms
 )
 ```
 
 ## How It Works
+Coming Soon
 
-### Timeline Example
-
-With `target_slo=1.0` and `hedge_at=0.95`:
-
-```
-t=0.0s:   Initial request sent
-t=0.95s:  Request hasn't completed yet → Hedge #1 sent
-t=1.1s:   Hedge #1 completes ✓
-          Initial request cancelled
-          Response returned to client
-```
 ## References
 
 - [The Tail at Scale](https://research.google/pubs/pub40801/) - Google's paper on tail latency
@@ -83,3 +55,10 @@ t=1.1s:   Hedge #1 completes ✓
 ## License
 
 BSD 3-Clause License. See [LICENSE](LICENSE) file for details.
+
+## Develop
+
+Run tests using tox.
+```
+uv run tox
+```

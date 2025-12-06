@@ -22,8 +22,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-
-
 class HedgingTransport(httpx.AsyncBaseTransport):
     """Asynchronous transport wrapper that implements request hedging.
 

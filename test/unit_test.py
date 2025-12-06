@@ -163,6 +163,3 @@ def assert_call_times(call_times: list[float], start_time: float, expected_call_
         lower_bound = expected_call_duration * 0.9
         upper_bound = expected_call_duration * 1.1
         assert lower_bound <= actual_duration <= upper_bound
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
