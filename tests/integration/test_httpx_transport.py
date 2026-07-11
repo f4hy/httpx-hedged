@@ -142,6 +142,52 @@ async def test_circuit_breaker_opens_under_failures_and_primary_still_responds()
     await transport.aclose()
 
 
+async def test_on_circuit_open_callback_fires_with_scope_and_key() -> None:
+    events: list[tuple[str, str]] = []
+    inner = ScriptedTransport([failing(delay=0.0)])
+    breaker = CircuitBreakerConfig(
+        min_samples=2, error_rate_threshold=0.5, cooldown=60.0
+    )
+    transport = HedgedTransport(
+        inner=inner,
+        default_config=HedgeConfig(min_delay=0.0, circuit_breaker=breaker),
+        on_circuit_open=lambda scope, key: events.append((scope, key)),
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                await client.get("https://api.example.com/flaky")
+
+    # Both the host and the (fallback) endpoint-key breaker share the same
+    # traffic here, so both trip and both fire the callback.
+    assert ("host", "api.example.com") in events
+    assert ("endpoint", "host:api.example.com") in events
+    await transport.aclose()
+
+
+async def test_on_hedge_fired_callback_fires_only_when_a_hedge_is_actually_sent() -> (
+    None
+):
+    fired: list[str] = []
+    inner = ScriptedTransport([delayed_response(0.05)])
+    transport = HedgedTransport(
+        inner=inner,
+        default_config=HedgeConfig(min_delay=0.0, warmup_delay=0.001),
+        on_hedge_fired=fired.append,
+    )
+    transport.register("GET", "/fast", EndpointConfig(hedge_delay=1.0))  # never hedges
+    transport.register(
+        "GET", "/slow", EndpointConfig(hedge_delay=0.001)
+    )  # always hedges
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        await client.get("https://api.example.com/fast")
+        await client.get("https://api.example.com/slow")
+
+    assert fired == ["endpoint:GET /slow"]
+    await transport.aclose()
+
+
 async def test_aclose_closes_inner_transport() -> None:
     inner = ScriptedTransport([delayed_response(0.0)])
     closed = {"value": False}

@@ -78,7 +78,7 @@ class Stats:
             return self.hedged_requests / self.total_requests
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StatsSnapshot:
     """Immutable point-in-time snapshot of Stats for a single key."""
 

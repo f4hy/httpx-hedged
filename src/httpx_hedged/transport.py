@@ -26,6 +26,8 @@ from httpx_hedged._scheduler import HedgeScheduler, extract_host
 from httpx_hedged._stats import StatsRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from httpx_hedged._matcher import Route
 
 _IDEMPOTENT_METHODS = ("GET", "HEAD", "OPTIONS")
@@ -56,6 +58,14 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             doesn't match a registered endpoint. Defaults to ``HedgeConfig()``.
         routes: Endpoints to register up front (equivalent to calling
             ``register()`` for each one after construction).
+        on_hedge_fired: Called with the key each time a hedge request is
+            actually launched. Intended for metrics -- see the README's
+            observability section for an example.
+        on_circuit_open: Called as ``on_circuit_open(scope, key)`` each
+            time a host- or endpoint-scoped circuit breaker trips open
+            (``scope`` is ``"host"`` or ``"endpoint"``). Intended for
+            alerting -- see the README's observability section for an
+            example.
     """
 
     def __init__(
@@ -63,13 +73,17 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         inner: httpx.AsyncBaseTransport | None = None,
         default_config: HedgeConfig | None = None,
         routes: list[Route] | None = None,
+        on_hedge_fired: Callable[[str], None] | None = None,
+        on_circuit_open: Callable[[str, str], None] | None = None,
     ) -> None:
         self._inner = inner or httpx.AsyncHTTPTransport()
         self._default_config = default_config or HedgeConfig()
         self._matcher = EndpointMatcher()
         self._stats = StatsRegistry()
-        self._health = HealthRegistry()
-        self._scheduler = HedgeScheduler(self._health, self._stats)
+        self._health = HealthRegistry(on_circuit_open=on_circuit_open)
+        self._scheduler = HedgeScheduler(
+            self._health, self._stats, on_hedge_fired=on_hedge_fired
+        )
 
         for route in routes or []:
             self.register(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(slots=True)
 class CircuitBreakerConfig:
     """Configuration for the health circuit breaker that gates hedging.
 
@@ -36,7 +36,7 @@ class CircuitBreakerConfig:
     treat_5xx_as_failure: bool = True
 
 
-@dataclass
+@dataclass(slots=True)
 class HedgeConfig:
     """Transport-wide default hedge configuration.
 
@@ -68,7 +68,7 @@ class HedgeConfig:
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
 
 
-@dataclass
+@dataclass(slots=True)
 class EndpointConfig:
     """Per-endpoint override of the transport's default ``HedgeConfig``.
 
@@ -94,7 +94,7 @@ class EndpointConfig:
     circuit_breaker: CircuitBreakerConfig | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EffectiveConfig:
     """Fully-resolved hedge configuration for a single key (no more None fields)."""
 

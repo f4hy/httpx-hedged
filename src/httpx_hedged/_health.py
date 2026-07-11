@@ -24,9 +24,13 @@ from __future__ import annotations
 import threading
 import time
 from enum import Enum, auto
+from typing import TYPE_CHECKING
 
 from httpx_hedged._options import CircuitBreakerConfig
 from httpx_hedged._rotation import RotateAction, next_action
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class CircuitState(Enum):
@@ -92,10 +96,22 @@ class CircuitBreaker:
 
     Not itself thread-safe across concurrent mutation from multiple
     threads; callers (``HealthRegistry``) hold their own lock.
+
+    Args:
+        config: Breaker thresholds and timing.
+        on_open: Called (with no arguments) each time the breaker
+            transitions into the OPEN state, whether from CLOSED or from a
+            failed HALF_OPEN trial. Useful for alerting -- see the README's
+            observability section for a logging example.
     """
 
-    def __init__(self, config: CircuitBreakerConfig) -> None:
+    def __init__(
+        self,
+        config: CircuitBreakerConfig,
+        on_open: Callable[[], None] | None = None,
+    ) -> None:
         self._config = config
+        self._on_open = on_open
         self._window = _ErrorWindow(config.window_duration)
         self._state = CircuitState.CLOSED
         self._opened_at: float = 0.0
@@ -145,12 +161,16 @@ class CircuitBreaker:
     def _open(self) -> None:
         self._state = CircuitState.OPEN
         self._opened_at = time.monotonic()
+        if self._on_open is not None:
+            self._on_open()
 
     def _reopen(self) -> None:
         self._state = CircuitState.OPEN
         self._opened_at = time.monotonic()
         self._half_open_trials = 0
         self._half_open_failures = 0
+        if self._on_open is not None:
+            self._on_open()
 
     def _enter_half_open(self) -> None:
         self._state = CircuitState.HALF_OPEN
@@ -171,10 +191,21 @@ class HealthRegistry:
     hedging for every endpoint on that host, while an endpoint-level trip
     disables hedging only for that endpoint, leaving sibling endpoints on
     the same host unaffected.
+
+    Args:
+        on_circuit_open: Called each time a breaker (host- or
+            endpoint-scoped) transitions into the OPEN state, as
+            ``on_circuit_open(scope, key)`` where ``scope`` is ``"host"``
+            or ``"endpoint"`` and ``key`` is the host name or endpoint key
+            that tripped. Intended for alerting -- see the README's
+            observability section for a logging example.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, on_circuit_open: Callable[[str, str], None] | None = None
+    ) -> None:
         self._lock = threading.Lock()
+        self._on_circuit_open = on_circuit_open
         self._host_breakers: dict[str, CircuitBreaker] = {}
         self._endpoint_breakers: dict[str, CircuitBreaker] = {}
 
@@ -184,7 +215,9 @@ class HealthRegistry:
         with self._lock:
             breaker = self._host_breakers.get(host)
             if breaker is None:
-                breaker = CircuitBreaker(config)
+                breaker = CircuitBreaker(
+                    config, on_open=self._on_open_callback("host", host)
+                )
                 self._host_breakers[host] = breaker
             return breaker
 
@@ -194,9 +227,17 @@ class HealthRegistry:
         with self._lock:
             breaker = self._endpoint_breakers.get(key)
             if breaker is None:
-                breaker = CircuitBreaker(config)
+                breaker = CircuitBreaker(
+                    config, on_open=self._on_open_callback("endpoint", key)
+                )
                 self._endpoint_breakers[key] = breaker
             return breaker
+
+    def _on_open_callback(self, scope: str, key: str) -> Callable[[], None] | None:
+        if self._on_circuit_open is None:
+            return None
+        callback = self._on_circuit_open
+        return lambda: callback(scope, key)
 
     def record_result(
         self,

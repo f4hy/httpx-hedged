@@ -26,7 +26,7 @@ class UnknownHedgeEndpointError(KeyError):
     """Raised when a request's ``hedge_endpoint`` extension names an unknown route."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Route:
     """A registered method + path pattern and the config it maps to.
 
@@ -52,7 +52,7 @@ def _compile_pattern(path_pattern: str) -> re.Pattern[str]:
     return re.compile("/".join(compiled_segments))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _CompiledRoute:
     method: str
     regex: re.Pattern[str]

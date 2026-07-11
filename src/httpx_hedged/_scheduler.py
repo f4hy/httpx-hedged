@@ -82,11 +82,25 @@ class HedgeScheduler:
     bucket budget, and the race-then-cancel logic. Consults the shared
     ``HealthRegistry`` to suppress hedging (never the primary request)
     while a host or endpoint circuit breaker is open.
+
+    Args:
+        health: Shared circuit-breaker registry.
+        stats_registry: Shared per-key statistics registry.
+        on_hedge_fired: Called with the key each time a hedge request is
+            actually launched (after all gates -- idempotency, circuit
+            breaker, budget -- have passed). Intended for metrics -- see
+            the README's observability section for an example.
     """
 
-    def __init__(self, health: HealthRegistry, stats_registry: StatsRegistry) -> None:
+    def __init__(
+        self,
+        health: HealthRegistry,
+        stats_registry: StatsRegistry,
+        on_hedge_fired: Callable[[str], None] | None = None,
+    ) -> None:
         self._health = health
         self._stats_registry = stats_registry
+        self._on_hedge_fired = on_hedge_fired
         self._states: dict[str, _EndpointState] = {}
 
     def state_for(self, key: str, config: EffectiveConfig) -> _EndpointState:
@@ -178,6 +192,8 @@ class HedgeScheduler:
             return await self._finish(state, host, key, primary_task, start, classify)
 
         state.stats.increment_hedged()
+        if self._on_hedge_fired is not None:
+            self._on_hedge_fired(key)
         hedge_coro = cast("Coroutine[Any, Any, T]", hedge_func())
         hedge_task: asyncio.Task[T] = asyncio.create_task(hedge_coro)
 

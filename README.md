@@ -190,6 +190,8 @@ struggling backend).
 
 ## Observability
 
+### Polling stats and health snapshots
+
 ```python
 transport = HedgedTransport()
 
@@ -204,6 +206,57 @@ print(transport.health.host_state("api.example.com"))
 `StatsSnapshot` reports `total_requests`, `hedged_requests`, `hedge_wins`,
 `primary_wins`, `budget_exhausted`, `warmup_requests`, `circuit_blocked`,
 and `errors` per key, plus a global aggregate.
+
+### Push-based hooks: metrics and alerting
+
+Polling snapshots works for dashboards, but alerting on a circuit-breaker
+trip and emitting a metric on every hedge fire are both things you want to
+happen *at the moment they occur*, not on the next poll. `HedgedTransport`
+takes two optional callbacks for exactly this:
+
+```python
+import logging
+
+import httpx
+from httpx_hedged import EndpointConfig, HedgeConfig, HedgedTransport
+
+logger = logging.getLogger("myapp.hedging")
+
+
+def emit_hedge_fired_metric(key: str) -> None:
+    statsd_client.incr("http.hedge.fired", tags=[f"endpoint:{key}"])
+
+
+def alert_on_circuit_open(scope: str, key: str) -> None:
+    # scope is "host" or "endpoint"; key is the host name or endpoint key
+    # that tripped. Fires exactly once per OPEN transition.
+    logger.error(
+        "hedging circuit breaker OPEN: %s=%s is unhealthy, hedging suspended", scope, key
+    )
+
+
+transport = HedgedTransport(
+    default_config=HedgeConfig(),
+    on_hedge_fired=emit_hedge_fired_metric,
+    on_circuit_open=alert_on_circuit_open,
+)
+
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.90))
+
+async with httpx.AsyncClient(transport=transport) as client:
+    ...
+```
+
+`on_hedge_fired` is called with the key each time a hedge request is
+actually launched -- after the idempotency, circuit-breaker, and budget
+gates have all passed, so it only fires for hedges that were genuinely
+sent. `on_circuit_open` is called once per OPEN transition (not on every
+suppressed hedge while it stays open), so it's safe to wire straight into
+an alerting/paging pipeline without flooding it.
+
+Both callbacks run synchronously on the request path, so keep them fast
+(increment a counter, log a line) -- don't do network I/O in them directly.
 
 ## Relationship to hedge-python
 
