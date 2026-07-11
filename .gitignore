@@ -1,3 +1,6 @@
+# Reference clone, not part of this project
+/hedge-python/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
