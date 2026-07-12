@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from httpx_hedged import CircuitBreakerConfig, CircuitState, EndpointConfig, HedgeConfig
-from httpx_hedged._options import resolve
+from httpx_hedged._config import resolve
 from httpx_hedged.transport import HedgedTransport
 from tests.conftest import ScriptedTransport, delayed_response, failing
 

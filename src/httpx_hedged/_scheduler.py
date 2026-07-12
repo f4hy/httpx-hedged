@@ -27,7 +27,7 @@ from httpx_hedged.sketch import WindowedSketch
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
 
-    from httpx_hedged._options import EffectiveConfig
+    from httpx_hedged._config import EffectiveConfig
 
 T = TypeVar("T")
 

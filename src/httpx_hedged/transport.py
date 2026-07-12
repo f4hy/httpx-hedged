@@ -19,9 +19,9 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from httpx_hedged._config import EndpointConfig, HedgeConfig, resolve
 from httpx_hedged._health import HealthRegistry
 from httpx_hedged._matcher import EndpointMatcher
-from httpx_hedged._options import EndpointConfig, HedgeConfig, resolve
 from httpx_hedged._scheduler import HedgeScheduler, extract_host
 from httpx_hedged._stats import StatsRegistry
 

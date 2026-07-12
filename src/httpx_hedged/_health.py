@@ -26,7 +26,7 @@ import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
-from httpx_hedged._options import CircuitBreakerConfig
+from httpx_hedged._config import CircuitBreakerConfig
 from httpx_hedged._rotation import RotateAction, next_action
 
 if TYPE_CHECKING:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from httpx_hedged._config import CircuitBreakerConfig
 from httpx_hedged._health import CircuitBreaker, CircuitState, HealthRegistry
-from httpx_hedged._options import CircuitBreakerConfig
 
 
 def make_breaker(**overrides: object) -> CircuitBreaker:

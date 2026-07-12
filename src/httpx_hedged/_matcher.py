@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from httpx_hedged._options import EndpointConfig
+from httpx_hedged._config import EndpointConfig
 
 _SEGMENT_PARAM_RE = re.compile(r"^\{[A-Za-z_]\w*\}$")
 

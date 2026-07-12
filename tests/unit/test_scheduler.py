@@ -7,14 +7,14 @@ import math
 
 import pytest
 
-from httpx_hedged._health import HealthRegistry
-from httpx_hedged._options import (
+from httpx_hedged._config import (
     CircuitBreakerConfig,
     EffectiveConfig,
     EndpointConfig,
     HedgeConfig,
     resolve,
 )
+from httpx_hedged._health import HealthRegistry
 from httpx_hedged._scheduler import HedgeScheduler, extract_host
 from httpx_hedged._stats import StatsRegistry
 

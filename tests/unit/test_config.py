@@ -1,8 +1,8 @@
-"""Unit tests for httpx_hedged._options: EndpointConfig/HedgeConfig merge semantics."""
+"""Unit tests for httpx_hedged._config: EndpointConfig/HedgeConfig merge semantics."""
 
 from __future__ import annotations
 
-from httpx_hedged._options import (
+from httpx_hedged._config import (
     CircuitBreakerConfig,
     EndpointConfig,
     HedgeConfig,

@@ -14,9 +14,9 @@ have those profiles mixed into one shared estimate.
 
 from __future__ import annotations
 
+from httpx_hedged._config import CircuitBreakerConfig, EndpointConfig, HedgeConfig
 from httpx_hedged._health import CircuitBreaker, CircuitState, HealthRegistry
 from httpx_hedged._matcher import Route, UnknownHedgeEndpointError
-from httpx_hedged._options import CircuitBreakerConfig, EndpointConfig, HedgeConfig
 from httpx_hedged._stats import Stats, StatsRegistry, StatsSnapshot
 from httpx_hedged.transport import HedgedTransport
 

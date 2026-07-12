@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from httpx_hedged._config import EndpointConfig
 from httpx_hedged._matcher import EndpointMatcher, UnknownHedgeEndpointError
-from httpx_hedged._options import EndpointConfig
 
 
 def make_request(
