@@ -255,7 +255,7 @@ transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.90)
 
 async with httpx.AsyncClient(transport=transport) as client:
     ...
-    ```
+```
 
 `on_hedge_fired` is called with the key each time a hedge request is
 actually launched -- after the idempotency, circuit-breaker, and budget
