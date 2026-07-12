@@ -1,0 +1,35 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on semantic version tags like v1.0.0, v0.2.1-beta, etc.
+
+jobs:
+  build-and-publish:
+    name: Build package and publish to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    # Required environment permissions for PyPI Trusted Publishing OIDC
+    permissions:
+      id-token: write  # MANDATORY: Enables GitHub to request the OIDC token
+      contents: read   # Required to checkout code
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install "3.13"
+
+      - name: Build Source and Wheel Distributions
+        run: uv build
+
+      - name: Publish Package to PyPI
+        run: uv publish
