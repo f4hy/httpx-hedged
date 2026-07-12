@@ -119,6 +119,54 @@ async def test_post_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
+async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
+    inner = ScriptedTransport([delayed_response(0.05)])
+    transport = HedgedTransport(
+        inner=inner,
+        default_config=HedgeConfig(
+            min_delay=0.0, warmup_delay=0.001, warmup_requests=5
+        ),
+    )
+
+    async def body() -> object:
+        yield b"streamed"
+
+    request = httpx.Request("GET", "https://api.example.com/anything", content=body())
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await client.send(request)
+    assert resp.status_code == 200
+    # A hedge would have sent the same one-shot stream twice; the gate
+    # must have suppressed it, so the inner transport only sees one call.
+    assert inner.calls == 1
+    snap = transport.stats.snapshot("host:api.example.com")
+    assert snap is not None
+    assert snap.hedged_requests == 0
+    await transport.aclose()
+
+
+async def test_host_breaker_uses_transport_default_not_first_endpoint_touched() -> None:
+    inner = ScriptedTransport([failing(delay=0.0)])
+    aggressive = CircuitBreakerConfig(min_samples=1, error_rate_threshold=0.0)
+    transport = HedgedTransport(
+        inner=inner, default_config=HedgeConfig(min_delay=0.0)
+    )  # default breaker: min_samples=20, so a single failure can't trip it
+    transport.register("GET", "/aggressive", EndpointConfig(circuit_breaker=aggressive))
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError):
+            await client.get("https://api.example.com/aggressive")
+
+    # A single failure trips the endpoint breaker (min_samples=1) but must
+    # not trip the host breaker -- the host tier always uses the
+    # transport-wide default config, regardless of which endpoint's
+    # override happens to touch the host first.
+    assert (
+        transport.health.endpoint_state("endpoint:GET /aggressive") is CircuitState.OPEN
+    )
+    assert transport.health.host_state("api.example.com") is CircuitState.CLOSED
+    await transport.aclose()
+
+
 async def test_circuit_breaker_opens_under_failures_and_primary_still_responds() -> (
     None
 ):

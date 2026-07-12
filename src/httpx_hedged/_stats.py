@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+from httpx_hedged._bounded import BoundedRegistry
+
 
 class Stats:
     """Thread-safe counters for hedge operations on a single key.
@@ -129,16 +131,12 @@ class StatsRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._stats: dict[str, Stats] = {}
+        self._stats: BoundedRegistry[Stats] = BoundedRegistry()
 
     def for_key(self, key: str) -> Stats:
         """Get or create the ``Stats`` object for a key."""
         with self._lock:
-            stats = self._stats.get(key)
-            if stats is None:
-                stats = Stats()
-                self._stats[key] = stats
-            return stats
+            return self._stats.get_or_create(key, Stats)
 
     def snapshot(self, key: str) -> StatsSnapshot | None:
         """Return a snapshot for a key, or None if the key has no recorded stats."""

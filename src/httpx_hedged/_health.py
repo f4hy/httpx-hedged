@@ -23,14 +23,12 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from enum import Enum, auto
-from typing import TYPE_CHECKING
 
+from httpx_hedged._bounded import BoundedRegistry
 from httpx_hedged._config import CircuitBreakerConfig
 from httpx_hedged._rotation import RotateAction, next_action
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 class CircuitState(Enum):
@@ -206,32 +204,37 @@ class HealthRegistry:
     ) -> None:
         self._lock = threading.Lock()
         self._on_circuit_open = on_circuit_open
-        self._host_breakers: dict[str, CircuitBreaker] = {}
-        self._endpoint_breakers: dict[str, CircuitBreaker] = {}
+        self._host_breakers: BoundedRegistry[CircuitBreaker] = BoundedRegistry()
+        self._endpoint_breakers: BoundedRegistry[CircuitBreaker] = BoundedRegistry()
 
     def breaker_for_host(
         self, host: str, config: CircuitBreakerConfig
     ) -> CircuitBreaker:
         with self._lock:
-            breaker = self._host_breakers.get(host)
-            if breaker is None:
-                breaker = CircuitBreaker(
-                    config, on_open=self._on_open_callback("host", host)
-                )
-                self._host_breakers[host] = breaker
-            return breaker
+            return self._get_host_locked(host, config)
 
     def breaker_for_endpoint(
         self, key: str, config: CircuitBreakerConfig
     ) -> CircuitBreaker:
         with self._lock:
-            breaker = self._endpoint_breakers.get(key)
-            if breaker is None:
-                breaker = CircuitBreaker(
-                    config, on_open=self._on_open_callback("endpoint", key)
-                )
-                self._endpoint_breakers[key] = breaker
-            return breaker
+            return self._get_endpoint_locked(key, config)
+
+    def _get_host_locked(
+        self, host: str, config: CircuitBreakerConfig
+    ) -> CircuitBreaker:
+        """Caller must hold ``self._lock``."""
+        return self._host_breakers.get_or_create(
+            host, lambda: CircuitBreaker(config, self._on_open_callback("host", host))
+        )
+
+    def _get_endpoint_locked(
+        self, key: str, config: CircuitBreakerConfig
+    ) -> CircuitBreaker:
+        """Caller must hold ``self._lock``."""
+        return self._endpoint_breakers.get_or_create(
+            key,
+            lambda: CircuitBreaker(config, self._on_open_callback("endpoint", key)),
+        )
 
     def _on_open_callback(self, scope: str, key: str) -> Callable[[], None] | None:
         if self._on_circuit_open is None:
@@ -247,8 +250,16 @@ class HealthRegistry:
         key_config: CircuitBreakerConfig,
         ok: bool,
     ) -> None:
-        self.breaker_for_host(host, host_config).record_result(ok)
-        self.breaker_for_endpoint(key, key_config).record_result(ok)
+        # CircuitBreaker is documented as not being thread-safe on its own
+        # ("callers hold their own lock") -- the lookup AND the mutation
+        # below must happen under one lock acquisition, not just the
+        # lookup, or concurrent callers can race on the same breaker's
+        # internal counters/state transitions.
+        with self._lock:
+            host_breaker = self._get_host_locked(host, host_config)
+            endpoint_breaker = self._get_endpoint_locked(key, key_config)
+            host_breaker.record_result(ok)
+            endpoint_breaker.record_result(ok)
 
     def hedging_allowed(
         self,
@@ -257,10 +268,10 @@ class HealthRegistry:
         host_config: CircuitBreakerConfig,
         key_config: CircuitBreakerConfig,
     ) -> bool:
-        return (
-            self.breaker_for_host(host, host_config).allow_hedge()
-            and self.breaker_for_endpoint(key, key_config).allow_hedge()
-        )
+        with self._lock:
+            host_breaker = self._get_host_locked(host, host_config)
+            endpoint_breaker = self._get_endpoint_locked(key, key_config)
+            return host_breaker.allow_hedge() and endpoint_breaker.allow_hedge()
 
     def host_state(self, host: str) -> CircuitState | None:
         with self._lock:

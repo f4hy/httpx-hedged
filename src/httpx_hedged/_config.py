@@ -6,6 +6,36 @@ from dataclasses import dataclass, field
 from typing import TypeVar
 
 
+def _validate_common(config: HedgeConfig | EndpointConfig) -> None:
+    """Validate the fields shared by ``HedgeConfig`` and ``EndpointConfig``.
+
+    Maybe we should just use pydantic to get this stuff build in...
+
+    Every check is skipped for a ``None`` value, since ``EndpointConfig``
+    fields default to None (meaning "inherit the transport default") and
+    are validated for real once ``resolve()`` merges them onto a
+    ``HedgeConfig``, which has no ``None`` fields.
+    """
+    if config.percentile is not None and not 0 < config.percentile < 1:
+        raise ValueError(f"percentile must be between 0 and 1, got {config.percentile}")
+    if config.budget_percent is not None and config.budget_percent < 0:
+        raise ValueError(f"budget_percent must be >= 0, got {config.budget_percent}")
+    if config.estimated_rps is not None and config.estimated_rps <= 0:
+        raise ValueError(f"estimated_rps must be > 0, got {config.estimated_rps}")
+    if config.rps_window_duration is not None and config.rps_window_duration <= 0:
+        raise ValueError(
+            f"rps_window_duration must be > 0, got {config.rps_window_duration}"
+        )
+    if config.min_delay is not None and config.min_delay < 0:
+        raise ValueError(f"min_delay must be >= 0, got {config.min_delay}")
+    if config.warmup_requests is not None and config.warmup_requests < 0:
+        raise ValueError(f"warmup_requests must be >= 0, got {config.warmup_requests}")
+    if config.warmup_delay is not None and config.warmup_delay < 0:
+        raise ValueError(f"warmup_delay must be >= 0, got {config.warmup_delay}")
+    if config.window_duration is not None and config.window_duration <= 0:
+        raise ValueError(f"window_duration must be > 0, got {config.window_duration}")
+
+
 @dataclass(slots=True)
 class CircuitBreakerConfig:
     """Configuration for the health circuit breaker that gates hedging.
@@ -36,6 +66,23 @@ class CircuitBreakerConfig:
     #: circuit-breaker purposes.
     treat_5xx_as_failure: bool = True
 
+    def __post_init__(self) -> None:
+        if not 0 <= self.error_rate_threshold <= 1:
+            raise ValueError(
+                "error_rate_threshold must be between 0 and 1, got "
+                f"{self.error_rate_threshold}"
+            )
+        if self.min_samples < 1:
+            raise ValueError(f"min_samples must be >= 1, got {self.min_samples}")
+        if self.window_duration <= 0:
+            raise ValueError(f"window_duration must be > 0, got {self.window_duration}")
+        if self.cooldown < 0:
+            raise ValueError(f"cooldown must be >= 0, got {self.cooldown}")
+        if self.half_open_max_trial < 1:
+            raise ValueError(
+                f"half_open_max_trial must be >= 1, got {self.half_open_max_trial}"
+            )
+
 
 @dataclass(slots=True)
 class HedgeConfig:
@@ -43,9 +90,6 @@ class HedgeConfig:
 
     #: Sketch quantile used as hedge trigger.
     percentile: float = 0.90
-
-    #: Maximum concurrent hedge requests per call.
-    max_hedges: int = 1
 
     #: Max hedge rate as percent of total traffic.
     budget_percent: float = 10.0
@@ -74,6 +118,9 @@ class HedgeConfig:
     #: Health circuit-breaker configuration.
     circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
 
+    def __post_init__(self) -> None:
+        _validate_common(self)
+
 
 @dataclass(slots=True)
 class EndpointConfig:
@@ -90,9 +137,6 @@ class EndpointConfig:
 
     #: Sketch quantile used as hedge trigger.
     percentile: float | None = None
-
-    #: Maximum concurrent hedge requests per call.
-    max_hedges: int | None = None
 
     #: Max hedge rate as percent of total traffic.
     budget_percent: float | None = None
@@ -124,13 +168,17 @@ class EndpointConfig:
     #: ``dataclasses.replace(default.circuit_breaker, ...)``.
     circuit_breaker: CircuitBreakerConfig | None = None
 
+    def __post_init__(self) -> None:
+        if self.hedge_delay is not None and self.hedge_delay < 0:
+            raise ValueError(f"hedge_delay must be >= 0, got {self.hedge_delay}")
+        _validate_common(self)
+
 
 @dataclass(frozen=True, slots=True)
 class EffectiveConfig:
     """Fully-resolved hedge configuration for a single key (no more None fields)."""
 
     percentile: float
-    max_hedges: int
     budget_percent: float
     estimated_rps: float | None
     rps_window_duration: float
@@ -163,7 +211,6 @@ def resolve(endpoint: EndpointConfig | None, default: HedgeConfig) -> EffectiveC
     override = endpoint if endpoint is not None else EndpointConfig()
     return EffectiveConfig(
         percentile=_pick(override.percentile, default.percentile),
-        max_hedges=_pick(override.max_hedges, default.max_hedges),
         budget_percent=_pick(override.budget_percent, default.budget_percent),
         estimated_rps=_pick(override.estimated_rps, default.estimated_rps),
         rps_window_duration=_pick(

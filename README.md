@@ -1,9 +1,11 @@
 # httpx-hedged
 
-An [httpx](https://www.python-httpx.org/) transport that adds adaptive,
-per-endpoint request hedging: fire a backup request when the primary is
-running slow, take whichever finishes first, cancel the loser. Based on
-Google's [The Tail at Scale](https://research.google/pubs/pub40801/).
+An [httpx](https://www.python-httpx.org/) transport that adds
+adaptive, per-endpoint request hedging: fire a backup request when the
+primary is running slow, take whichever finishes first, cancel the
+loser. Based on Google's [The Tail at
+Scale](https://research.google/pubs/pub40801/) and modeled heavily on
+[hedge-python](https://github.com/sunhailin-Leo/hedge-python).
 
 ## Quick start
 
@@ -23,7 +25,7 @@ asyncio.run(main())
 
 With no configuration, `HedgedTransport` learns a p90 latency estimate per
 host (via a [DDSketch](https://arxiv.org/abs/2004.08604) quantile sketch)
-and fires a hedge request whenever the primary exceeds it.
+and fires a hedge request whenever the primary exceeds it. 
 
 ## Why per-endpoint?
 
@@ -102,7 +104,6 @@ falling back, so typos fail loudly.
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `percentile` | `float` | `0.90` | Sketch quantile used as the hedge trigger |
-| `max_hedges` | `int` | `1` | Maximum concurrent hedge requests per call |
 | `budget_percent` | `float` | `10.0` | Max hedge rate as percent of total traffic |
 | `estimated_rps` | `float \| None` | `None` | Pin the expected requests/sec, or leave `None` to auto-estimate from observed traffic |
 | `rps_window_duration` | `float` | `10.0` | Rolling window (seconds) for RPS auto-estimation |
@@ -132,6 +133,11 @@ the transport default." One extra field:
 | `half_open_max_trial` | `int` | `5` | Trial requests allowed through while half-open |
 | `treat_5xx_as_failure` | `bool` | `True` | Whether an HTTP 5xx response counts as a failure |
 
+All three config classes validate their fields at construction time (e.g.
+`percentile` must be strictly between 0 and 1, delays and windows must be
+non-negative/positive) and raise `ValueError` immediately on a bad value,
+rather than silently misbehaving later.
+
 ## How it works
 
 ### Race and cancel
@@ -143,7 +149,10 @@ request ──────┤
 ```
 
 Only idempotent methods (`GET`, `HEAD`, `OPTIONS`) are ever hedged, to avoid
-duplicating side effects.
+duplicating side effects. A request with a body is also never hedged, even
+if the method is idempotent -- the primary and hedge send the same
+`httpx.Request` object, and a body backed by a one-shot stream can't be
+safely read twice.
 
 ### DDSketch quantile estimator
 
@@ -246,7 +255,7 @@ transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.90)
 
 async with httpx.AsyncClient(transport=transport) as client:
     ...
-```
+    ```
 
 `on_hedge_fired` is called with the key each time a hedge request is
 actually launched -- after the idempotency, circuit-breaker, and budget

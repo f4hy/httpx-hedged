@@ -15,22 +15,32 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import httpx
 
 from httpx_hedged._config import EndpointConfig, HedgeConfig, resolve
 from httpx_hedged._health import HealthRegistry
-from httpx_hedged._matcher import EndpointMatcher
+from httpx_hedged._matcher import EndpointMatcher, Route
 from httpx_hedged._scheduler import HedgeScheduler, extract_host
 from httpx_hedged._stats import StatsRegistry
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from httpx_hedged._matcher import Route
-
 _IDEMPOTENT_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def _has_body(request: httpx.Request) -> bool:
+    """Whether a request carries a body that a hedge can't safely re-send.
+
+    The primary and hedge both send the same ``httpx.Request`` object; a
+    body backed by a one-shot async stream (e.g. ``content=some_generator``)
+    would be consumed by whichever of the two reads it first, corrupting or
+    failing the other. Idempotent methods essentially never carry a body in
+    normal use, so this only ever changes behavior for that edge case.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length not in (None, "0"):
+        return True
+    return request.headers.get("transfer-encoding", "").lower() == "chunked"
 
 
 class HedgedTransport(httpx.AsyncBaseTransport):
@@ -82,7 +92,10 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         self._stats = StatsRegistry()
         self._health = HealthRegistry(on_circuit_open=on_circuit_open)
         self._scheduler = HedgeScheduler(
-            self._health, self._stats, on_hedge_fired=on_hedge_fired
+            self._health,
+            self._stats,
+            self._default_config.circuit_breaker,
+            on_hedge_fired=on_hedge_fired,
         )
 
         for route in routes or []:
@@ -132,7 +145,9 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             key = f"host:{host}"
             resolved = resolve(None, self._default_config)
 
-        can_hedge = request.method.upper() in _IDEMPOTENT_METHODS
+        can_hedge = request.method.upper() in _IDEMPOTENT_METHODS and not _has_body(
+            request
+        )
         treat_5xx_as_failure = resolved.circuit_breaker.treat_5xx_as_failure
 
         async def do_request() -> httpx.Response:
@@ -140,6 +155,9 @@ class HedgedTransport(httpx.AsyncBaseTransport):
 
         def classify(response: httpx.Response) -> bool:
             return not (treat_5xx_as_failure and response.status_code >= 500)
+
+        async def discard(response: httpx.Response) -> None:
+            await response.aclose()
 
         return await self._scheduler.execute_with_hedge(
             key=key,
@@ -149,6 +167,7 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             hedge_func=do_request,
             classify=classify,
             can_hedge=can_hedge,
+            discard=discard,
         )
 
     async def aclose(self) -> None:

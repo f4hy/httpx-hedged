@@ -56,7 +56,20 @@ class RollingRateCounter:
             self._current += 1
 
     def rate_per_second(self) -> float:
-        """Return the estimated requests-per-second over the last 1x-2x window."""
+        """Return the estimated requests-per-second, as a sliding-window average.
+
+        Weights the previous window's count by the fraction of it that
+        still falls within the trailing ``window_duration``-sized lookback
+        from now, rather than always dividing by a fixed ``2 *
+        window_duration`` -- that fixed divisor systematically
+        underestimates by up to 2x right after a rotation, when the
+        current window has accumulated almost nothing yet but the full
+        previous window's count is still discounted as if it were only
+        half-relevant.
+        """
         with self._lock:
             self._maybe_rotate_locked()
-            return (self._previous + self._current) / (2 * self._window_duration)
+            elapsed = time.monotonic() - self._window_start
+            weight = max(0.0, 1.0 - elapsed / self._window_duration)
+            weighted = self._previous * weight + self._current
+            return weighted / self._window_duration

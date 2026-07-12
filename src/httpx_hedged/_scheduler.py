@@ -15,19 +15,17 @@ import asyncio
 import contextlib
 import math
 import time
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, TypeVar, cast
 from urllib.parse import urlparse
 
+from httpx_hedged._bounded import BoundedRegistry
+from httpx_hedged._config import CircuitBreakerConfig, EffectiveConfig
 from httpx_hedged._health import HealthRegistry
 from httpx_hedged._rate import RollingRateCounter
 from httpx_hedged._stats import Stats, StatsRegistry
 from httpx_hedged.budget import TokenBucket
 from httpx_hedged.sketch import WindowedSketch
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine
-
-    from httpx_hedged._config import EffectiveConfig
 
 T = TypeVar("T")
 
@@ -86,6 +84,13 @@ class HedgeScheduler:
     Args:
         health: Shared circuit-breaker registry.
         stats_registry: Shared per-key statistics registry.
+        host_circuit_breaker: Circuit-breaker configuration used for the
+            *host* tier, independent of whichever endpoint's config happens
+            to be resolved for a given request -- a host isn't owned by any
+            one endpoint, so its breaker thresholds must not depend on
+            request arrival order (see ``_should_hedge``/``_finish``, which
+            always pass this rather than the per-request resolved config
+            for the host side of ``HealthRegistry`` calls).
         on_hedge_fired: Called with the key each time a hedge request is
             actually launched (after all gates -- idempotency, circuit
             breaker, budget -- have passed). Intended for metrics -- see
@@ -96,20 +101,20 @@ class HedgeScheduler:
         self,
         health: HealthRegistry,
         stats_registry: StatsRegistry,
+        host_circuit_breaker: CircuitBreakerConfig | None = None,
         on_hedge_fired: Callable[[str], None] | None = None,
     ) -> None:
         self._health = health
         self._stats_registry = stats_registry
+        self._host_circuit_breaker = host_circuit_breaker or CircuitBreakerConfig()
         self._on_hedge_fired = on_hedge_fired
-        self._states: dict[str, _EndpointState] = {}
+        self._states: BoundedRegistry[_EndpointState] = BoundedRegistry()
 
     def state_for(self, key: str, config: EffectiveConfig) -> _EndpointState:
         """Get or create the state for a key. ``config`` is only used on creation."""
-        state = self._states.get(key)
-        if state is None:
-            state = _EndpointState(config, self._stats_registry.for_key(key))
-            self._states[key] = state
-        return state
+        return self._states.get_or_create(
+            key, lambda: _EndpointState(config, self._stats_registry.for_key(key))
+        )
 
     def compute_hedge_delay(self, state: _EndpointState) -> float:
         """Compute the hedge delay in seconds for the current request on this key."""
@@ -141,6 +146,7 @@ class HedgeScheduler:
         hedge_func: Callable[[], Awaitable[T]],
         classify: Callable[[T], bool],
         can_hedge: bool,
+        discard: Callable[[T], Awaitable[None]] | None = None,
     ) -> T:
         """Execute the primary request with hedge racing logic.
 
@@ -154,6 +160,11 @@ class HedgeScheduler:
             classify: Callable that returns True if a completed result should
                 count as a success for circuit-breaker purposes.
             can_hedge: Whether the request is safe to hedge (idempotent).
+            discard: Optional async callable used to release a losing
+                task's already-completed result (e.g. closing an
+                ``httpx.Response`` to release its pooled connection) when
+                the primary and hedge happen to finish in the same
+                event-loop pass.
 
         Returns:
             The result from whichever request finishes first.
@@ -169,52 +180,87 @@ class HedgeScheduler:
         hedge_delay = self.compute_hedge_delay(state)
         start = time.monotonic()
 
-        primary_coro = cast("Coroutine[Any, Any, T]", primary_func())
-        primary_task: asyncio.Task[T] = asyncio.create_task(primary_coro)
+        primary_task: asyncio.Task[T] = asyncio.create_task(
+            cast("Coroutine[Any, Any, T]", primary_func())
+        )
+        hedge_task: asyncio.Task[T] | None = None
+        tasks = {primary_task}
 
-        done, _ = await asyncio.wait({primary_task}, timeout=hedge_delay)
-        if done:
-            return await self._finish(state, host, key, primary_task, start, classify)
+        try:
+            done, _ = await asyncio.wait(tasks, timeout=hedge_delay)
+            if not done:
+                if self._should_hedge(state, host, key, can_hedge):
+                    state.stats.increment_hedged()
+                    if self._on_hedge_fired is not None:
+                        self._on_hedge_fired(key)
+                    hedge_task = asyncio.create_task(
+                        cast("Coroutine[Any, Any, T]", hedge_func())
+                    )
+                    tasks.add(hedge_task)
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
+            winner_task = (
+                primary_task
+                if primary_task in done
+                else cast("asyncio.Task[T]", hedge_task)
+            )
+
+            if hedge_task is not None:
+                if winner_task is primary_task:
+                    state.stats.increment_primary_wins()
+                else:
+                    state.stats.increment_hedge_wins()
+                loser_task = hedge_task if winner_task is primary_task else primary_task
+                if not loser_task.done():
+                    loser_task.cancel()
+                await asyncio.wait({loser_task})
+                await self._discard(loser_task, discard)
+
+            return await self._finish(state, host, key, winner_task, start, classify)
+        finally:
+            # Reached on the happy path too, where every task is already
+            # done and this is a no-op -- but if this coroutine itself is
+            # cancelled (e.g. the caller wrapped the request in a timeout)
+            # while blocked on one of the awaits above, asyncio.wait does
+            # not cancel the tasks it was waiting on, so they'd otherwise
+            # keep running detached, holding a pooled connection open.
+            pending = {task for task in tasks if not task.done()}
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending)
+
+    def _should_hedge(
+        self, state: _EndpointState, host: str, key: str, can_hedge: bool
+    ) -> bool:
+        """Check the hedge gates: idempotency, circuit breaker, then budget."""
         if not can_hedge:
-            await asyncio.wait({primary_task})
-            return await self._finish(state, host, key, primary_task, start, classify)
-
-        breaker_cfg = state.config.circuit_breaker
-        if not self._health.hedging_allowed(host, key, breaker_cfg, breaker_cfg):
+            return False
+        if not self._health.hedging_allowed(
+            host, key, self._host_circuit_breaker, state.config.circuit_breaker
+        ):
             state.stats.increment_circuit_blocked()
-            await asyncio.wait({primary_task})
-            return await self._finish(state, host, key, primary_task, start, classify)
-
+            return False
         if not state.token_bucket.try_acquire():
             state.stats.increment_budget_exhausted()
-            await asyncio.wait({primary_task})
-            return await self._finish(state, host, key, primary_task, start, classify)
+            return False
+        return True
 
-        state.stats.increment_hedged()
-        if self._on_hedge_fired is not None:
-            self._on_hedge_fired(key)
-        hedge_coro = cast("Coroutine[Any, Any, T]", hedge_func())
-        hedge_task: asyncio.Task[T] = asyncio.create_task(hedge_coro)
-
-        done, pending = await asyncio.wait(
-            {primary_task, hedge_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        winner_task = done.pop()
-
-        for task in pending:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-
-        if winner_task is primary_task:
-            state.stats.increment_primary_wins()
-        else:
-            state.stats.increment_hedge_wins()
-
-        return await self._finish(
-            state, host, key, cast("asyncio.Task[T]", winner_task), start, classify
-        )
+    async def _discard(
+        self, task: asyncio.Task[T], discard: Callable[[T], Awaitable[None]] | None
+    ) -> None:
+        """Retrieve a losing task's outcome so it neither leaks a resource nor
+        logs "Task exception was never retrieved", whether it was cancelled
+        mid-flight or had already completed (primary and hedge finishing in
+        the same event-loop pass)."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            return
+        if discard is not None:
+            with contextlib.suppress(Exception):
+                await discard(task.result())
 
     async def _finish(
         self,
@@ -237,19 +283,20 @@ class HedgeScheduler:
             result = winner_task.result()
         except Exception:
             state.sketch.add(elapsed)
-            self._health.record_result(host, key, breaker_cfg, breaker_cfg, False)
+            self._health.record_result(
+                host, key, self._host_circuit_breaker, breaker_cfg, False
+            )
             state.stats.increment_errors()
             raise
 
         state.sketch.add(elapsed)
         ok = classify(result)
-        self._health.record_result(host, key, breaker_cfg, breaker_cfg, ok)
+        self._health.record_result(
+            host, key, self._host_circuit_breaker, breaker_cfg, ok
+        )
         if not ok:
             state.stats.increment_errors()
         return result
 
     def close(self) -> None:
-        """No-op: windowed structures rotate lazily, so there's nothing to stop.
-
-        Kept for API symmetry with the rest of the transport's lifecycle.
-        """
+        """Noop."""

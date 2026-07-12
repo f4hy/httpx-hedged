@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 
 import pytest
@@ -262,6 +263,119 @@ async def test_exception_from_hedge_winner_is_recorded_then_reraised() -> None:
     snap = stats.snapshot("k")
     assert snap is not None
     assert snap.errors == 1
+
+
+# --- cancellation safety and loser cleanup -----------------------------------
+
+
+async def test_external_cancellation_does_not_leak_the_primary_task() -> None:
+    """If the caller cancels the whole call (e.g. asyncio.wait_for), the
+    in-flight primary must actually be cancelled, not left running detached
+    in the background."""
+    scheduler, _health, _stats = make_scheduler()
+    config = hardcoded_config(1.0)  # hedge delay far longer than the timeout below
+    ran_to_completion = False
+
+    async def slow_primary() -> str:
+        nonlocal ran_to_completion
+        await asyncio.sleep(1.0)
+        ran_to_completion = True
+        return "ok"
+
+    async def call() -> str:
+        return await scheduler.execute_with_hedge(
+            key="k",
+            host="h",
+            config=config,
+            primary_func=slow_primary,
+            hedge_func=fast_ok,
+            classify=always_ok,
+            can_hedge=True,
+        )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(call(), timeout=0.02)
+
+    # Give the event loop a chance to run any orphaned background task; if
+    # the primary leaked, it would complete here.
+    await asyncio.sleep(0.05)
+    assert ran_to_completion is False
+
+
+async def test_discard_releases_a_loser_that_completed_successfully() -> None:
+    """When the primary and hedge finish in the same event-loop pass, the
+    non-winning task is never cancelled (it's already done) -- its result
+    must still be handed to ``discard`` so callers can release it (e.g.
+    closing an httpx.Response to free its pooled connection)."""
+    scheduler, _health, _stats = make_scheduler()
+    released: list[str] = []
+
+    async def discard(value: str) -> None:
+        released.append(value)
+
+    task = asyncio.create_task(fast_ok())
+    await task
+    await scheduler._discard(task, discard)
+    assert released == ["ok"]
+
+
+async def test_discard_skips_a_cancelled_loser() -> None:
+    scheduler, _health, _stats = make_scheduler()
+    called = False
+
+    async def discard(_: str) -> None:
+        nonlocal called
+        called = True
+
+    task = asyncio.create_task(slow_then_ok(10.0))
+    await asyncio.sleep(0)  # let it start
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    await scheduler._discard(task, discard)
+    assert called is False
+
+
+async def test_discard_skips_a_loser_that_raised() -> None:
+    scheduler, _health, _stats = make_scheduler()
+    called = False
+
+    async def discard(_: str) -> None:
+        nonlocal called
+        called = True
+
+    task = asyncio.create_task(raise_error())
+    with contextlib.suppress(ValueError):
+        await task
+
+    # Must not re-raise the loser's exception, and must not call discard.
+    await scheduler._discard(task, discard)
+    assert called is False
+
+
+async def test_discard_not_called_for_a_genuinely_cancelled_loser_in_a_race() -> None:
+    """The common case: the loser is still mid-flight when cancelled, so it
+    never produced a result -- discard must not be invoked for it."""
+    scheduler, _health, _stats = make_scheduler()
+    config = hardcoded_config(0.01)
+    discarded: list[str] = []
+
+    async def discard(value: str) -> None:
+        discarded.append(value)
+
+    result = await scheduler.execute_with_hedge(
+        key="k",
+        host="h",
+        config=config,
+        primary_func=lambda: slow_then_ok(1.0),
+        hedge_func=lambda: slow_then_ok(0.02),
+        classify=always_ok,
+        can_hedge=True,
+        discard=discard,
+    )
+    assert result == "slow-ok"
+    assert discarded == []
 
 
 # --- per-key isolation --------------------------------------------------------
