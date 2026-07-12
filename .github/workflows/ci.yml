@@ -12,7 +12,6 @@ jobs:
       matrix:
         python-version: ["3.13"]
       fail-fast: false
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,21 +20,17 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-          enable-cache: true # Automatically handles caching for uv speedups
+          enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          uv pip install ruff pytest
-          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
-
+      # If you have a requirements.txt file, uv installs it directly into an ephemeral environment
       - name: Run Ruff Linter
-        run: uv run ruff check .
+        run: uv run --with ruff ruff check .
 
       - name: Run Ruff Formatter Check
-        run: uv run ruff format --check .
+        run: uv run --with ruff ruff format --check .
 
       - name: Run Tests with Pytest
-        run: uv run pytest
+        run: uv run --with pytest pytest
