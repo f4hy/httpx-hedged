@@ -6,8 +6,9 @@ import math
 import threading
 import time
 
+from ddsketch import DDSketch
+
 from httpx_hedged._rotation import RotateAction, next_action
-from httpx_hedged.sketch._ddsketch import DDSketch
 
 _DEFAULT_WINDOW_DURATION = 30.0  # seconds
 
@@ -82,7 +83,8 @@ class WindowedSketch:
             merged = DDSketch(self._relative_accuracy)
             merged.merge(self._previous)
             merged.merge(self._current)
-            return merged.quantile(q)
+            value = merged.get_quantile_value(q)
+            return math.nan if value is None else value
 
     def rotate(self) -> None:
         """Force an immediate rotation. Mostly useful for testing."""

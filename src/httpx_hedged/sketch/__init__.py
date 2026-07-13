@@ -1,8 +1,7 @@
-"""Quantile-sketch primitives used to estimate per-key latency percentiles."""
+"""Sliding-window latency quantile tracking, built on the ``ddsketch`` package."""
 
 from __future__ import annotations
 
-from httpx_hedged.sketch._ddsketch import DDSketch
 from httpx_hedged.sketch._windowed import WindowedSketch
 
-__all__ = ["DDSketch", "WindowedSketch"]
+__all__ = ["WindowedSketch"]
