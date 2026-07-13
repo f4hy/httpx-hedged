@@ -319,7 +319,7 @@ async def test_external_cancellation_does_not_leak_the_primary_task() -> None:
             can_hedge=True,
         )
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(call(), timeout=0.02)
 
     # Give the event loop a chance to run any orphaned background task; if
