@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs deps, starts the demo FastAPI backend, runs the hedging demo
-# client against it, and prints the stats report -- then tears the server
+# client against it, and prints the stats report, then tears the server
 # down. Run from anywhere:
 #
 #   ./examples/run_example.sh

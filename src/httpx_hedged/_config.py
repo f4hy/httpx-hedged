@@ -39,7 +39,7 @@ def _validate_common(config: HedgeConfig | EndpointConfig) -> None:
 class CircuitBreakerConfig:
     """Configuration for the health circuit breaker that gates hedging.
 
-    Tripping the breaker only ever suppresses the *hedge* request -- the
+    Tripping the breaker only ever suppresses the *hedge* request. The
     primary request is always sent and its result or exception is always
     returned to the caller normally.
     """
@@ -163,7 +163,7 @@ class EndpointConfig:
 
     #: Health circuit-breaker configuration. When set, replaces the
     #: default breaker config as a whole object rather than being merged
-    #: field-by-field -- for a partial override, use
+    #: field-by-field. For a partial override, use
     #: ``dataclasses.replace(default.circuit_breaker, ...)``.
     circuit_breaker: CircuitBreakerConfig | None = None
 
@@ -175,7 +175,16 @@ class EndpointConfig:
 
 @dataclass(frozen=True, slots=True)
 class EffectiveConfig:
-    """Fully-resolved hedge configuration for a single key (no more None fields)."""
+    """Fully-resolved hedge configuration for a single key.
+
+    Every "inherit the default" field from ``EndpointConfig`` has been
+    resolved away by ``resolve()``. ``estimated_rps`` and ``hedge_delay``
+    stay ``Optional`` here regardless, since their ``None`` means something
+    different than "unresolved": ``estimated_rps=None`` means "auto-estimate
+    from traffic" and ``hedge_delay=None`` means "no hardcoded delay, learn
+    one from the sketch" (see ``is_hardcoded``). Both are real, permanent
+    states, not resolution artifacts.
+    """
 
     percentile: float
     budget_percent: float

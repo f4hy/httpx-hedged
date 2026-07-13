@@ -1,6 +1,9 @@
 # Reference clone, not part of this project
 /hedge-python/
 
+# Generated at build time by hatch-vcs from the git tag
+/src/httpx_hedged/_version.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

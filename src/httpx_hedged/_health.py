@@ -1,6 +1,6 @@
 """Health-based circuit breaker that suppresses hedging during outages.
 
-hedge-python has no concept of request success/failure at all -- its token
+hedge-python has no concept of request success/failure at all: its token
 bucket caps hedge *volume* but has no idea whether the backend is actually
 healthy. This module adds a circuit breaker, tracked independently at both
 the host level and the per-endpoint level, so that either "one endpoint is
@@ -9,14 +9,14 @@ requiring the two to be conflated.
 
 Tripping the breaker only ever suppresses the *hedge* request. The primary
 request always goes through and its result or exception is always returned
-to the caller -- this is deliberately not a request-blocking circuit
+to the caller. This is deliberately not a request-blocking circuit
 breaker, only a hedge-suppressing one, so hedging can't pile extra load
 onto an already-failing backend.
 
 Known limitation: health is recorded from the winning task's outcome only.
 A cancelled loser's real outcome is unknowable, and losers are cancelled
-deliberately -- not doing so would defeat the breaker's purpose of reducing
-load on a struggling backend.
+deliberately, since not doing so would defeat the breaker's purpose of
+reducing load on a struggling backend.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class CircuitBreaker:
         config: Breaker thresholds and timing.
         on_open: Called (with no arguments) each time the breaker
             transitions into the OPEN state, whether from CLOSED or from a
-            failed HALF_OPEN trial. Useful for alerting -- see the README's
+            failed HALF_OPEN trial. Useful for alerting; see the README's
             observability section for a logging example.
     """
 
@@ -136,7 +136,7 @@ class CircuitBreaker:
             return
 
         # CLOSED (or OPEN, where a result can still arrive from a primary
-        # request even though hedging is suppressed -- keep tracking it).
+        # request even though hedging is suppressed; keep tracking it).
         self._window.record(ok)
         if (
             self._state is CircuitState.CLOSED
@@ -195,7 +195,7 @@ class HealthRegistry:
             endpoint-scoped) transitions into the OPEN state, as
             ``on_circuit_open(scope, key)`` where ``scope`` is ``"host"``
             or ``"endpoint"`` and ``key`` is the host name or endpoint key
-            that tripped. Intended for alerting -- see the README's
+            that tripped. Intended for alerting; see the README's
             observability section for a logging example.
     """
 
@@ -251,7 +251,7 @@ class HealthRegistry:
         ok: bool,
     ) -> None:
         # CircuitBreaker is documented as not being thread-safe on its own
-        # ("callers hold their own lock") -- the lookup AND the mutation
+        # ("callers hold their own lock"). The lookup AND the mutation
         # below must happen under one lock acquisition, not just the
         # lookup, or concurrent callers can race on the same breaker's
         # internal counters/state transitions.

@@ -44,7 +44,7 @@ def test_rate_weights_previous_window_by_remaining_overlap(
     fake_clock: Callable[[float], None],
 ) -> None:
     """At steady state, the estimate should track the true rate throughout
-    the window -- not just right after a rotation -- by discounting the
+    the window, not just right after a rotation, by discounting the
     previous window's count as it falls further outside the trailing
     window_duration-sized lookback from now."""
     counter = RollingRateCounter(window_duration=10.0)
@@ -63,5 +63,5 @@ def test_long_idle_resets_rate_to_zero(fake_clock: Callable[[float], None]) -> N
     counter = RollingRateCounter(window_duration=10.0)
     for _ in range(20):
         counter.increment()
-    fake_clock(25.0)  # beyond 2x window -- reset
+    fake_clock(25.0)  # beyond 2x window, reset
     assert counter.rate_per_second() == 0.0

@@ -48,7 +48,7 @@ class HedgedTransport(httpx.AsyncBaseTransport):
 
     Wraps a single inner transport (default: ``httpx.AsyncHTTPTransport``,
     one connection pool) and races a backup request when the primary
-    exceeds its estimated latency percentile -- or a hardcoded delay, for
+    exceeds its estimated latency percentile, or a hardcoded delay, for
     endpoints registered with ``EndpointConfig(hedge_delay=...)``.
 
     Endpoints are identified by registering method + path patterns via
@@ -69,12 +69,12 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         routes: Endpoints to register up front (equivalent to calling
             ``register()`` for each one after construction).
         on_hedge_fired: Called with the key each time a hedge request is
-            actually launched. Intended for metrics -- see the README's
+            actually launched. Intended for metrics; see the README's
             observability section for an example.
         on_circuit_open: Called as ``on_circuit_open(scope, key)`` each
             time a host- or endpoint-scoped circuit breaker trips open
             (``scope`` is ``"host"`` or ``"endpoint"``). Intended for
-            alerting -- see the README's observability section for an
+            alerting; see the README's observability section for an
             example.
     """
 
@@ -116,7 +116,7 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         ``path_pattern`` segments may contain ``{name}`` placeholders or a
         bare ``*`` to match any single path segment (e.g.
         ``/api/v1/users/{id}``). Routes are matched in registration order,
-        first match wins -- register more specific patterns first.
+        first match wins, so register more specific patterns first.
 
         Returns the resolved endpoint name (used as the key in ``stats``
         and as the value for ``extensions={"hedge_endpoint": name}``).
@@ -132,6 +132,23 @@ class HedgedTransport(httpx.AsyncBaseTransport):
     def health(self) -> HealthRegistry:
         """Host- and endpoint-level circuit breaker state."""
         return self._health
+
+    def latency_quantile(self, key: str, q: float) -> float | None:
+        """Return the current estimated latency (seconds) at quantile ``q``
+        for a tracked key, or None if nothing has been recorded for that
+        key yet.
+
+        ``key`` uses the same ``"endpoint:<name>"`` / ``"host:<hostname>"``
+        format as ``stats`` and ``health``. For example, after
+        ``name = transport.register("GET", "/search", ...)``, query it with
+        ``transport.latency_quantile(f"endpoint:{name}", 0.9)`` for the
+        current learned p90::
+
+            p90 = transport.latency_quantile(f"endpoint:{name}", 0.9)
+            if p90 is not None:
+                print(f"{name} p90: {p90 * 1000:.1f}ms")
+        """
+        return self._scheduler.latency_quantile(key, q)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Handle an outgoing request with adaptive, per-endpoint hedging."""

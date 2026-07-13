@@ -5,8 +5,8 @@ Every windowed structure in this package (``WindowedSketch``,
 current/previous pair of accumulators and decides whether to rotate or reset
 them lazily, on the next call that touches the structure, rather than via a
 background thread or asyncio task. This avoids spinning one rotation task per
-tracked key -- important once state is tracked per-endpoint rather than just
-per-host, since a service can have dozens of endpoints.
+tracked key, which matters once state is tracked per-endpoint rather than
+just per-host, since a service can have dozens of endpoints.
 """
 
 from __future__ import annotations

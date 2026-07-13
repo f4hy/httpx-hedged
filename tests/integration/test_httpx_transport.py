@@ -38,7 +38,7 @@ async def test_two_endpoints_share_one_transport_with_independent_delays() -> No
     transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.9))
     transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.9))
 
-    # Prime each endpoint's own sketch directly -- this is what accumulates
+    # Prime each endpoint's own sketch directly; this is what accumulates
     # from real traffic via handle_async_request over time; injecting
     # samples here keeps the test fast and deterministic. The scheduler is
     # reached through the transport's internals deliberately, to prove the
@@ -119,6 +119,22 @@ async def test_post_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
+async def test_latency_quantile_reflects_traffic_through_the_transport() -> None:
+    inner = ScriptedTransport([delayed_response(0.01)])
+    transport = HedgedTransport(inner=inner, default_config=HedgeConfig(min_delay=0.0))
+    transport.register("GET", "/api/v1/search", EndpointConfig())
+
+    assert transport.latency_quantile("endpoint:GET /api/v1/search", 0.9) is None
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        await client.get("https://api.example.com/api/v1/search")
+
+    p90 = transport.latency_quantile("endpoint:GET /api/v1/search", 0.9)
+    assert p90 is not None
+    assert p90 > 0
+    await transport.aclose()
+
+
 async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
     inner = ScriptedTransport([delayed_response(0.05)])
     transport = HedgedTransport(
@@ -157,7 +173,7 @@ async def test_host_breaker_uses_transport_default_not_first_endpoint_touched() 
             await client.get("https://api.example.com/aggressive")
 
     # A single failure trips the endpoint breaker (min_samples=1) but must
-    # not trip the host breaker -- the host tier always uses the
+    # not trip the host breaker: the host tier always uses the
     # transport-wide default config, regardless of which endpoint's
     # override happens to touch the host first.
     assert (
