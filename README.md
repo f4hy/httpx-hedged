@@ -163,7 +163,9 @@ safely read twice.
 Each tracked key (an endpoint, or the per-host fallback) gets its own
 sliding-window DDSketch pair that rotates every `window_duration` seconds.
 DDSketch gives relative-error quantile guarantees regardless of the
-underlying latency distribution's shape.
+underlying latency distribution's shape. The sketch itself comes from the
+[`ddsketch`](https://github.com/DataDog/sketches-py) package (DataDog's
+reference implementation of the paper below).
 
 ### Token bucket budget
 

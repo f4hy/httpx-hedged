@@ -39,8 +39,9 @@ def test_quantile_reflects_data_within_window(
     for v in range(1, 51):
         sketch.add(float(v))
     fake_clock(15.0)  # still within the first window, no rotation
-    assert sketch.quantile(0.0) == 1.0
-    assert sketch.quantile(1.0) == 50.0
+    # within DDSketch's relative-error guarantee (~1%), not exact
+    assert sketch.quantile(0.0) == pytest.approx(1.0, rel=0.02)
+    assert sketch.quantile(1.0) == pytest.approx(50.0, rel=0.02)
 
 
 def test_rotate_keeps_previous_window_data_visible(
@@ -73,4 +74,4 @@ def test_add_after_reset_starts_fresh_window(
     sketch.add(5.0)
     fake_clock(25.0)
     sketch.add(99.0)
-    assert sketch.quantile(1.0) == 99.0
+    assert sketch.quantile(1.0) == pytest.approx(99.0, rel=0.02)
