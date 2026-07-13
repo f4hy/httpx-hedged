@@ -44,6 +44,7 @@ def test_quantile_reflects_data_within_window(
     assert sketch.quantile(1.0) == pytest.approx(50.0, rel=0.02)
 
 
+
 def test_rotate_keeps_previous_window_data_visible(
     fake_clock: Callable[[float], None],
 ) -> None:
