@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TypeVar
+
+T = TypeVar("T")
 
 
 def _validate_common(config: HedgeConfig | EndpointConfig) -> None:
@@ -202,7 +205,7 @@ class EffectiveConfig:
         return self.hedge_delay is not None
 
 
-def _pick[T](override: T | None, fallback: T) -> T:
+def _pick(override: T | None, fallback: T) -> T:
     return override if override is not None else fallback
 
 
