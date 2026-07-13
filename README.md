@@ -165,7 +165,11 @@ sliding-window DDSketch pair that rotates every `window_duration` seconds.
 DDSketch gives relative-error quantile guarantees regardless of the
 underlying latency distribution's shape. The sketch itself comes from the
 [`ddsketch`](https://github.com/DataDog/sketches-py) package (DataDog's
-reference implementation of the paper below).
+reference implementation of the paper below) by default. If the optional
+[`rddsketch`](https://github.com/f4hy/rddsketch) package (a Rust-backed,
+near-drop-in reimplementation, Python 3.11+) is installed — e.g. via
+`pip install httpx-hedged[rust]` — it's used instead, transparently, for
+faster inserts and lower memory use per sketch.
 
 ### Token bucket budget
 
