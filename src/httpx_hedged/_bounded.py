@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from typing import Generic, TypeVar
 
 DEFAULT_MAX_SIZE = 10_000
 
+V = TypeVar("V")
 
-class BoundedRegistry[V]:
+
+class BoundedRegistry(Generic[V]):
     """Not thread-safe by itself. Callers hold their own lock, as with the
     plain dicts this replaces."""
 
