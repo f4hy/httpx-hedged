@@ -38,7 +38,7 @@ def test_quantile_reflects_data_within_window(
     sketch = WindowedSketch(window_duration=30.0)
     for v in range(1, 51):
         sketch.add(float(v))
-    fake_clock(15.0)  # still within the first window -- no rotation
+    fake_clock(15.0)  # still within the first window, no rotation
     assert sketch.quantile(0.0) == 1.0
     assert sketch.quantile(1.0) == 50.0
 
@@ -62,7 +62,7 @@ def test_idle_beyond_two_windows_hard_resets(
 ) -> None:
     sketch = WindowedSketch(window_duration=10.0)
     sketch.add(5.0)
-    fake_clock(25.0)  # more than 2x window_duration has elapsed -- reset, not rotate
+    fake_clock(25.0)  # more than 2x window_duration has elapsed: reset, not rotate
     assert math.isnan(sketch.quantile(0.5))
 
 

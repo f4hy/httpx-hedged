@@ -1,8 +1,10 @@
 [project]
 name = "httpx-hedged"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Adaptive, per-endpoint request hedging transport for httpx. Learns latency percentiles per endpoint with DDSketch, caps hedge rate with a token bucket, and stops hedging under a host/endpoint circuit breaker."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.27.0",
@@ -15,6 +17,7 @@ dev = [
     "pytest>=9.0.1",
     "pytest-asyncio>=1.3.0",
     "python-lsp-server[all]>=1.13.2",
+    "ruff>=0.14.0",
 ]
 examples = [
     "fastapi>=0.115",
@@ -22,11 +25,17 @@ examples = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/httpx_hedged"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/httpx_hedged/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

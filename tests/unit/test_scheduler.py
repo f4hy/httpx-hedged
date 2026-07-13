@@ -84,6 +84,32 @@ def test_min_delay_floors_the_result() -> None:
     assert scheduler.compute_hedge_delay(state) == 0.05
 
 
+# --- latency_quantile ---------------------------------------------------------
+
+
+def test_latency_quantile_is_none_for_an_untracked_key() -> None:
+    scheduler, _health, _stats = make_scheduler()
+    assert scheduler.latency_quantile("never-seen", 0.9) is None
+
+
+def test_latency_quantile_is_none_before_any_samples() -> None:
+    scheduler, _health, _stats = make_scheduler()
+    config = resolve(None, HedgeConfig())
+    scheduler.state_for("k", config)  # creates the state, but adds no samples
+    assert scheduler.latency_quantile("k", 0.9) is None
+
+
+def test_latency_quantile_reflects_recorded_samples() -> None:
+    scheduler, _health, _stats = make_scheduler()
+    config = resolve(None, HedgeConfig())
+    state = scheduler.state_for("k", config)
+    for v in range(1, 101):
+        state.sketch.add(v / 1000.0)  # 0.001..0.1 seconds
+    p90 = scheduler.latency_quantile("k", 0.9)
+    assert p90 is not None
+    assert 0.085 <= p90 <= 0.095
+
+
 # --- execute_with_hedge: race behavior ---------------------------------------
 
 
@@ -304,7 +330,7 @@ async def test_external_cancellation_does_not_leak_the_primary_task() -> None:
 
 async def test_discard_releases_a_loser_that_completed_successfully() -> None:
     """When the primary and hedge finish in the same event-loop pass, the
-    non-winning task is never cancelled (it's already done) -- its result
+    non-winning task is never cancelled (it's already done), so its result
     must still be handed to ``discard`` so callers can release it (e.g.
     closing an httpx.Response to free its pooled connection)."""
     scheduler, _health, _stats = make_scheduler()
@@ -356,7 +382,7 @@ async def test_discard_skips_a_loser_that_raised() -> None:
 
 async def test_discard_not_called_for_a_genuinely_cancelled_loser_in_a_race() -> None:
     """The common case: the loser is still mid-flight when cancelled, so it
-    never produced a result -- discard must not be invoked for it."""
+    never produced a result, and discard must not be invoked for it."""
     scheduler, _health, _stats = make_scheduler()
     config = hardcoded_config(0.01)
     discarded: list[str] = []

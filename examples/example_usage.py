@@ -39,7 +39,7 @@ CONCURRENCY = 6
 
 # The hedge token bucket auto-estimates RPS over a rolling ~10s window by
 # default, which under-counts traffic sent in a shorter burst like this
-# demo's -- so budget starves and hedges rarely fire. Pinning estimated_rps
+# demo's, so budget starves and hedges rarely fire. Pinning estimated_rps
 # (roughly concurrency / expected latency) avoids that ramp-up and keeps
 # the demo's hedge behavior visible run over run. /fast is left on the
 # default auto-estimate since it barely ever needs to hedge anyway.
@@ -91,6 +91,12 @@ def print_report(transport: HedgedTransport) -> None:
     print(f"\ntotal requests sent: {global_snap.total_requests}")
     print(f"total hedges fired:  {global_snap.hedged_requests}")
 
+    print("\n=== learned p90 latency estimates ===")
+    for route in ROUTES:
+        key = f"endpoint:{route}"
+        p90 = transport.latency_quantile(key, 0.9)
+        print(f"{key:<16} {f'{p90 * 1000:.1f}ms' if p90 is not None else 'n/a'}")
+
     print("\n=== circuit breaker state ===")
     for route in ROUTES:
         key = f"endpoint:{route}"
@@ -104,7 +110,7 @@ async def wait_for_server(client: httpx.AsyncClient) -> None:
         response.raise_for_status()
     except httpx.HTTPError:
         print(
-            f"Could not reach {BASE_URL} -- is examples/app.py running?",
+            f"Could not reach {BASE_URL}: is examples/app.py running?",
             file=sys.stderr,
         )
         sys.exit(1)

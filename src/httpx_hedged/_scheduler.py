@@ -5,7 +5,7 @@ two changes: state is keyed per *endpoint* rather than only per *host* (see
 ``_matcher.py``), and the win/lose bookkeeping always records the outcome
 (latency + health) even when the winning task raised an exception. In
 hedge-python, ``winner_task.result()`` is called before recording, so an
-exception there silently skips recording entirely -- this rewrite records
+exception there silently skips recording entirely. This rewrite records
 first, then re-raises.
 """
 
@@ -86,15 +86,15 @@ class HedgeScheduler:
         stats_registry: Shared per-key statistics registry.
         host_circuit_breaker: Circuit-breaker configuration used for the
             *host* tier, independent of whichever endpoint's config happens
-            to be resolved for a given request -- a host isn't owned by any
+            to be resolved for a given request. A host isn't owned by any
             one endpoint, so its breaker thresholds must not depend on
             request arrival order (see ``_should_hedge``/``_finish``, which
             always pass this rather than the per-request resolved config
             for the host side of ``HealthRegistry`` calls).
         on_hedge_fired: Called with the key each time a hedge request is
-            actually launched (after all gates -- idempotency, circuit
-            breaker, budget -- have passed). Intended for metrics -- see
-            the README's observability section for an example.
+            actually launched, after the idempotency, circuit-breaker, and
+            budget gates have all passed. Intended for metrics; see the
+            README's observability section for an example.
     """
 
     def __init__(
@@ -116,11 +116,20 @@ class HedgeScheduler:
             key, lambda: _EndpointState(config, self._stats_registry.for_key(key))
         )
 
+    def latency_quantile(self, key: str, q: float) -> float | None:
+        """Return the current estimated latency (seconds) at quantile ``q``
+        for a tracked key, or None if the key isn't tracked yet or has no
+        recorded samples."""
+        state = self._states.get(key)
+        if state is None:
+            return None
+        estimate = state.sketch.quantile(q)
+        return None if math.isnan(estimate) else estimate
+
     def compute_hedge_delay(self, state: _EndpointState) -> float:
         """Compute the hedge delay in seconds for the current request on this key."""
         config = state.config
-        if config.is_hardcoded:
-            assert config.hedge_delay is not None
+        if config.hedge_delay is not None:
             return max(config.hedge_delay, config.min_delay)
 
         if state.counter <= config.warmup_requests:
@@ -219,7 +228,7 @@ class HedgeScheduler:
             return await self._finish(state, host, key, winner_task, start, classify)
         finally:
             # Reached on the happy path too, where every task is already
-            # done and this is a no-op -- but if this coroutine itself is
+            # done and this is a no-op. But if this coroutine itself is
             # cancelled (e.g. the caller wrapped the request in a timeout)
             # while blocked on one of the awaits above, asyncio.wait does
             # not cancel the tasks it was waiting on, so they'd otherwise
@@ -274,7 +283,7 @@ class HedgeScheduler:
         """Record latency and health outcome, then return the result or re-raise.
 
         Recording always happens before the result is returned or the
-        exception is re-raised -- unlike hedge-python, where an exception
+        exception is re-raised. In hedge-python, by contrast, an exception
         from ``winner_task.result()`` silently skips recording.
         """
         elapsed = time.monotonic() - start

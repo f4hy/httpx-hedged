@@ -18,7 +18,7 @@ class WindowedSketch:
     Quantile queries merge both sketches, giving a window that spans 1x to
     2x the configured duration. ``add`` always writes to the current
     sketch. Rotation is decided lazily on each call rather than by a
-    background thread/task -- see ``httpx_hedged._rotation`` -- since a
+    background thread/task (see ``httpx_hedged._rotation``), since a
     service can have many independently-tracked endpoints, and spinning one
     rotation task per endpoint does not scale.
 

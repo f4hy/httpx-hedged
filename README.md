@@ -23,6 +23,10 @@ async def main():
 asyncio.run(main())
 ```
 
+For a runnable, end-to-end demo (a small backend with different latency
+profiles per route, driven by a client that prints a hedge/latency/circuit
+breaker report), see [`examples/`](examples/README.md).
+
 With no configuration, `HedgedTransport` learns a p90 latency estimate per
 host (via a [DDSketch](https://arxiv.org/abs/2004.08604) quantile sketch)
 and fires a hedge request whenever the primary exceeds it. 
@@ -30,7 +34,7 @@ and fires a hedge request whenever the primary exceeds it.
 ## Why per-endpoint?
 
 A single host can host wildly different endpoints. Learning one latency
-distribution per *host* -- rather than per endpoint -- means a handful of
+distribution per *host*, rather than per endpoint, means a handful of
 calls to a slow endpoint skew the hedge trigger for a fast one sharing the
 same host:
 
@@ -41,7 +45,7 @@ GET /api/v1/bulk-export   median 900ms, low RPS
 
 `HedgedTransport` lets you register per-endpoint config up front. Each
 registered endpoint gets its own latency sketch, rate estimate, and hedge
-budget -- all still funneled through a **single inner transport and
+budget, all still funneled through a **single inner transport and
 connection pool**, unlike using `httpx` `mounts={}`, which would mean one
 connection pool per pattern:
 
@@ -59,7 +63,7 @@ endpoints at all).
 
 Route patterns may contain `{name}` placeholders or a bare `*` for a single
 path segment, e.g. `/api/v1/users/{id}`. Patterns are matched in
-registration order -- register more specific patterns first.
+registration order, so register more specific patterns first.
 
 ## Hardcoded vs. adaptive delay
 
@@ -70,8 +74,8 @@ percentile:
 transport.register("GET", "/api/v1/search", EndpointConfig(percentile=0.95))
 ```
 
-For an endpoint where you already know the right delay -- or want
-deterministic behavior without a warmup period -- hardcode it instead:
+For an endpoint where you already know the right delay, or want
+deterministic behavior without a warmup period, hardcode it instead:
 
 ```python
 transport.register("GET", "/api/v1/health", EndpointConfig(hedge_delay=0.05))
@@ -83,7 +87,7 @@ observability; it just isn't consulted for the hedge-delay decision.
 ## Explicit endpoint override
 
 Auto-matching not precise enough for a particular call site (or you'd
-rather not register a pattern)? Tag the request directly -- this bypasses
+rather not register a pattern)? Tag the request directly; this bypasses
 pattern matching entirely:
 
 ```python
@@ -150,7 +154,7 @@ request ──────┤
 
 Only idempotent methods (`GET`, `HEAD`, `OPTIONS`) are ever hedged, to avoid
 duplicating side effects. A request with a body is also never hedged, even
-if the method is idempotent -- the primary and hedge send the same
+if the method is idempotent: the primary and hedge send the same
 `httpx.Request` object, and a body backed by a one-shot stream can't be
 safely read twice.
 
@@ -175,13 +179,13 @@ endpoint.
 
 A closed / open / half-open circuit breaker tracks request success/failure
 at **two independent tiers**: one breaker per host, one breaker per
-endpoint key. Either tripping open suppresses hedging for its scope -- a
+endpoint key. Either tripping open suppresses hedging for its scope: a
 host-level trip disables hedging for every endpoint on that host, while an
 endpoint-level trip disables hedging only for that one endpoint.
 
 Crucially, the breaker **only ever suppresses the hedge request**. The
 primary request is always sent, and its result or exception is always
-returned to the caller normally -- this is not a request-blocking circuit
+returned to the caller normally. This is not a request-blocking circuit
 breaker, so hedging can't pile extra load onto a backend that's already
 struggling.
 
@@ -192,7 +196,7 @@ HALF_OPEN ──(trial requests mostly succeed)──▶ CLOSED
 HALF_OPEN ──(trial requests mostly fail)────▶ OPEN
 ```
 
-Note: health is recorded from the *winning* task's outcome only -- a
+Note: health is recorded from the *winning* task's outcome only. A
 cancelled loser's real outcome is unknowable, and losers are cancelled
 deliberately (not doing so would defeat the point of reducing load on a
 struggling backend).
@@ -215,6 +219,20 @@ print(transport.health.host_state("api.example.com"))
 `StatsSnapshot` reports `total_requests`, `hedged_requests`, `hedge_wins`,
 `primary_wins`, `budget_exhausted`, `warmup_requests`, `circuit_blocked`,
 and `errors` per key, plus a global aggregate.
+
+To see the learned latency estimate itself (e.g. the current p90 driving
+the hedge trigger), query `latency_quantile()` with the same key format:
+
+```python
+name = transport.register("GET", "/api/v1/search", EndpointConfig(percentile=0.90))
+# ... after running some traffic ...
+p90 = transport.latency_quantile(f"endpoint:{name}", 0.9)
+if p90 is not None:
+    print(f"p90: {p90 * 1000:.1f}ms")
+```
+
+Returns `None` if the key hasn't recorded any samples yet. You can query
+any quantile, not just the one driving the hedge decision.
 
 ### Push-based hooks: metrics and alerting
 
@@ -258,14 +276,14 @@ async with httpx.AsyncClient(transport=transport) as client:
 ```
 
 `on_hedge_fired` is called with the key each time a hedge request is
-actually launched -- after the idempotency, circuit-breaker, and budget
+actually launched, after the idempotency, circuit-breaker, and budget
 gates have all passed, so it only fires for hedges that were genuinely
 sent. `on_circuit_open` is called once per OPEN transition (not on every
 suppressed hedge while it stays open), so it's safe to wire straight into
 an alerting/paging pipeline without flooding it.
 
 Both callbacks run synchronously on the request path, so keep them fast
-(increment a counter, log a line) -- don't do network I/O in them directly.
+(increment a counter, log a line); don't do network I/O in them directly.
 
 ## Relationship to hedge-python
 
@@ -281,11 +299,11 @@ for the motivating scenario.
 
 ## References
 
-- [The Tail at Scale](https://research.google/pubs/pub40801/) -- Google's paper on tail latency
-- [DDSketch: A fast and fully-mergeable quantile sketch with relative-error guarantees](https://arxiv.org/abs/2004.08604) -- Masson et al., VLDB 2019
-- [hedge-python](https://github.com/sunhailin-Leo/hedge-python) -- the project this one is modeled after
+- [The Tail at Scale](https://research.google/pubs/pub40801/): Google's paper on tail latency
+- [DDSketch: A fast and fully-mergeable quantile sketch with relative-error guarantees](https://arxiv.org/abs/2004.08604): Masson et al., VLDB 2019
+- [hedge-python](https://github.com/sunhailin-Leo/hedge-python): the project this one is modeled after
 - [httpx documentation](https://www.python-httpx.org/)
 
 ## License
 
-BSD 3-Clause License. See [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) file for details.

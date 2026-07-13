@@ -1,8 +1,8 @@
 """Tiny FastAPI backend with three latency profiles, for the hedging demo.
 
-    GET /fast   -- always responds in ~5-15ms
-    GET /slow   -- always takes 800ms
-    GET /flaky  -- 90% of requests are fast (~5-15ms), 10% take ~900ms
+    GET /fast   always responds in ~5-15ms
+    GET /slow   always takes 800ms
+    GET /flaky  90% of requests are fast (~5-15ms), 10% take ~900ms
 
 Run directly with uvicorn, e.g.:
 

@@ -3,7 +3,7 @@
 hedge-python requires callers to hand-tune a single ``estimated_rps`` value
 per host. That is workable for one host, but this library tracks state per
 *endpoint*, and a service with many endpoints of very different traffic
-volumes would require hand-tuning a guess for each one -- exactly the kind
+volumes would require hand-tuning a guess for each one, exactly the kind
 of per-endpoint configuration burden this rewrite is trying to avoid. By
 default we estimate the rate automatically instead.
 """
@@ -61,7 +61,7 @@ class RollingRateCounter:
         Weights the previous window's count by the fraction of it that
         still falls within the trailing ``window_duration``-sized lookback
         from now, rather than always dividing by a fixed ``2 *
-        window_duration`` -- that fixed divisor systematically
+        window_duration``. That fixed divisor systematically
         underestimates by up to 2x right after a rotation, when the
         current window has accumulated almost nothing yet but the full
         previous window's count is still discounted as if it were only

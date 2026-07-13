@@ -4,7 +4,7 @@ hedge-python keys its latency sketch per *host* only. A service with many
 routes of very different latency/RPS profiles (e.g. ``GET /api/v1/foo`` vs.
 ``GET /api/v1/bar``) would have all of their latencies mixed into one
 sketch. This module lets callers register per-route ``EndpointConfig``
-objects up front, matched against every request's method and path -- all
+objects up front, matched against every request's method and path, all
 still funneled through a single ``httpx.AsyncBaseTransport`` / connection
 pool, so supporting many endpoints does not multiply connection pools the
 way ``httpx`` ``mounts={}`` would.

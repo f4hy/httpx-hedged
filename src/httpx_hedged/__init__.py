@@ -18,6 +18,7 @@ from httpx_hedged._config import CircuitBreakerConfig, EndpointConfig, HedgeConf
 from httpx_hedged._health import CircuitBreaker, CircuitState, HealthRegistry
 from httpx_hedged._matcher import Route, UnknownHedgeEndpointError
 from httpx_hedged._stats import Stats, StatsRegistry, StatsSnapshot
+from httpx_hedged._version import __version__
 from httpx_hedged.transport import HedgedTransport
 
 __all__ = [
@@ -33,6 +34,5 @@ __all__ = [
     "StatsRegistry",
     "StatsSnapshot",
     "UnknownHedgeEndpointError",
+    "__version__",
 ]
-
-__version__ = "0.2.0"
