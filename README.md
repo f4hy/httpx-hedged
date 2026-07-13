@@ -306,4 +306,4 @@ for the motivating scenario.
 
 ## License
 
-BSD 3-Clause License. See [LICENSE](LICENSE) file for details.
+MIT License. See [LICENSE](LICENSE) file for details.
