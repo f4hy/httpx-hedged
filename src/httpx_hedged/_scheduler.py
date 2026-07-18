@@ -62,7 +62,7 @@ class _EndpointState:
     internally thread-safe already. ``counter`` is a plain unlocked int:
     under the sync scheduler's worker threads a racing ``+= 1`` can
     occasionally lose an increment, which at worst extends the warmup phase
-    by a request — not worth a per-request lock on the async path.
+    by a request; that is not worth a per-request lock on the async path.
     """
 
     def __init__(self, config: EffectiveConfig, stats: Stats) -> None:
@@ -87,7 +87,7 @@ class _EndpointState:
 def compute_hedge_delay(state: _EndpointState) -> float:
     """Compute the hedge delay in seconds for the current request on this key.
 
-    Pure function of ``state`` — shared verbatim by ``HedgeScheduler`` and
+    Pure function of ``state``, shared verbatim by ``HedgeScheduler`` and
     ``SyncHedgeScheduler``, neither of which touches an async/thread
     primitive here.
     """
@@ -177,8 +177,8 @@ def record_outcome(
     from ``winner_task.result()`` silently skips recording.
 
     ``get_result`` is usually ``winner_task.result`` (async) or
-    ``winner_future.result`` (sync) — plain, non-blocking accessors once the
-    winner is already done — so this function itself needs no async/thread
+    ``winner_future.result`` (sync), both plain, non-blocking accessors once
+    the winner is already done, so this function itself needs no async/thread
     primitive. The sync scheduler's no-hedge fast path instead passes the
     request callable itself, which is why latency is measured when
     ``get_result`` returns rather than on entry.

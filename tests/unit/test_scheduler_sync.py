@@ -32,8 +32,8 @@ def always_ok(_result: object) -> bool:
 
 
 # compute_hedge_delay is a one-line delegation to the shared
-# _scheduler.compute_hedge_delay, already covered by test_scheduler.py —
-# not re-tested here.
+# _scheduler.compute_hedge_delay, already covered by test_scheduler.py, so
+# it is not re-tested here.
 
 # --- latency_quantile ---------------------------------------------------------
 

@@ -49,7 +49,7 @@ class SyncHedgedTransport(_HedgedTransportCore, httpx.BaseTransport):
     registered with ``EndpointConfig(hedge_delay=...)``. Functionally
     equivalent to ``HedgedTransport`` (same config, matching, stats, and
     circuit-breaker semantics) for use with ``httpx.Client`` instead of
-    ``httpx.AsyncClient`` — it's a fully independent instance with its own
+    ``httpx.AsyncClient``; it's a fully independent instance with its own
     state, not one that shares hedge state with an async ``HedgedTransport``
     hitting the same backend.
 
@@ -141,7 +141,7 @@ class SyncHedgedTransport(_HedgedTransportCore, httpx.BaseTransport):
     def close(self) -> None:
         """Close the transport, its thread pool, and the wrapped inner transport.
 
-        Blocks until any orphaned loser thread finishes — see the module
+        Blocks until any orphaned loser thread finishes; see the module
         docstring: this can hang if a loser is blocked on a socket with no
         timeout configured on the inner transport.
         """

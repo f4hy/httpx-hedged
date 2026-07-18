@@ -87,7 +87,7 @@ class SyncScriptedTransport(httpx.BaseTransport):
 
     Unlike the async version, ``handle_request`` is genuinely called from
     concurrent OS threads (primary + hedge), so bookkeeping needs its own
-    lock — the async version gets that for free from the single-threaded
+    lock; the async version gets that for free from the single-threaded
     event loop, and copying its ``self.calls += 1`` here verbatim would be
     a real data race.
     """

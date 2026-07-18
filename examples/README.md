@@ -27,7 +27,7 @@ uv run python examples/example_usage.py          # or --sync
 ```
 
 Both modes drive identical load (same routes, request counts, and
-concurrency — the sync mode uses a thread pool where the async mode uses
+concurrency; the sync mode uses a thread pool where the async mode uses
 `asyncio.gather`) and print the same report at the end.
 
 ## What to look for in the output

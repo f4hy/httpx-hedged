@@ -13,7 +13,7 @@ result immediately and lets the loser finish in the background whenever its
 blocking call happens to return, discarding its result via a done-callback
 at that point. ``loser_future.cancel()`` is still attempted first, but it
 only succeeds if the loser is still queued and hasn't started running yet
-(e.g. it never got a worker thread before losing) — once a thread is mid
+(e.g. it never got a worker thread before losing); once a thread is mid
 socket-read, cancellation is a no-op.
 
 This means hedging through this scheduler *without a request timeout
@@ -101,7 +101,7 @@ class SyncHedgeScheduler:
 
         Locked because ``BoundedRegistry`` itself is not thread-safe and a
         shared sync ``httpx.Client`` can call in from many worker threads
-        at once — unlike the async scheduler, which runs on one event-loop
+        at once, unlike the async scheduler, which runs on one event-loop
         thread and needs no lock here.
         """
         with self._states_lock:
@@ -149,7 +149,7 @@ class SyncHedgeScheduler:
 
         if not can_hedge:
             # A hedge can never fire for this request, so skip the executor
-            # race entirely and run the primary on the calling thread — a
+            # race entirely and run the primary on the calling thread; a
             # write-heavy workload would otherwise burn two threads per
             # request for no possible benefit. record_outcome measures
             # latency when the callable returns, so recording is identical
@@ -211,9 +211,9 @@ class SyncHedgeScheduler:
         """Release a losing future's already-completed result (e.g. closing
         an ``httpx.Response`` to free its pooled connection), whether it
         was cancelled before it started or completed on its own after the
-        winner was already returned. Runs as a ``Future`` done-callback —
+        winner was already returned. Runs as a ``Future`` done-callback,
         on whichever thread completes the future, or synchronously if it
-        was already done when attached — so errors are suppressed rather
+        was already done when attached, so errors are suppressed rather
         than left for ``concurrent.futures`` to swallow-and-log.
 
         Note ``concurrent.futures.CancelledError`` subclasses ``Exception``
@@ -234,7 +234,7 @@ class SyncHedgeScheduler:
         """Shut down the internal thread pool.
 
         Blocks until every in-flight future finishes, including any
-        orphaned loser still running in the background — this can hang if a
+        orphaned loser still running in the background; this can hang if a
         loser is blocked on a socket with no timeout configured on the
         inner transport. Also cancels anything still queued but not yet
         started. Shuts down the executor even if it was supplied by the

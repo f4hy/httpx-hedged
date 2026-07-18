@@ -50,7 +50,7 @@ def _resolve_request(
     """Resolve a request to its hedge key, host, effective config, and hedge
     eligibility.
 
-    Pure computation, independent of sync/async — shared by
+    Pure computation, independent of sync/async, shared by
     ``HedgedTransport`` and ``SyncHedgedTransport``.
 
     Returns:
@@ -126,7 +126,7 @@ class _HedgedTransportCore:
     ) -> str:
         """Register a per-endpoint hedge config for a method + path pattern.
 
-        Must be called before request traffic starts — route registration
+        Must be called before request traffic starts: route registration
         has no locking (unlike hedge state), so it's one-time setup, not
         safe to call concurrently with in-flight requests on either
         transport.
