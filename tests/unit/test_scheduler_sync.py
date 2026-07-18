@@ -31,43 +31,9 @@ def always_ok(_result: object) -> bool:
     return True
 
 
-# --- compute_hedge_delay -----------------------------------------------------
-
-
-def test_warmup_uses_fixed_delay() -> None:
-    scheduler, _health, _stats = make_scheduler()
-    config = resolve(None, HedgeConfig(warmup_requests=3, warmup_delay=0.02))
-    state = scheduler.state_for("k", config)
-    state.counter = 1
-    assert scheduler.compute_hedge_delay(state) == 0.02
-
-
-def test_post_warmup_uses_sketch_quantile() -> None:
-    scheduler, _health, _stats = make_scheduler()
-    config = resolve(
-        None, HedgeConfig(warmup_requests=0, percentile=0.9, min_delay=0.0)
-    )
-    state = scheduler.state_for("k", config)
-    for v in range(1, 101):
-        state.sketch.add(v / 1000.0)  # 0.001..0.1 seconds
-    state.counter = 1
-    delay = scheduler.compute_hedge_delay(state)
-    assert 0.085 <= delay <= 0.095
-
-
-def test_hardcoded_delay_skips_sketch() -> None:
-    scheduler, _health, _stats = make_scheduler()
-    config = resolve(EndpointConfig(hedge_delay=0.5), HedgeConfig(min_delay=0.0))
-    state = scheduler.state_for("k", config)
-    assert scheduler.compute_hedge_delay(state) == 0.5
-
-
-def test_min_delay_floors_the_result() -> None:
-    scheduler, _health, _stats = make_scheduler()
-    config = resolve(EndpointConfig(hedge_delay=0.001, min_delay=0.05), HedgeConfig())
-    state = scheduler.state_for("k", config)
-    assert scheduler.compute_hedge_delay(state) == 0.05
-
+# compute_hedge_delay is a one-line delegation to the shared
+# _scheduler.compute_hedge_delay, already covered by test_scheduler.py —
+# not re-tested here.
 
 # --- latency_quantile ---------------------------------------------------------
 

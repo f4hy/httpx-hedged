@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar, cast
@@ -60,12 +59,10 @@ class _EndpointState:
 
     Shared by both ``HedgeScheduler`` (async) and ``SyncHedgeScheduler``
     (sync). ``sketch``/``token_bucket``/``rate_counter``/``stats`` are each
-    internally thread-safe already; ``counter`` is the one raw field, so its
-    mutation goes through ``increment_counter()`` under its own lock. The
-    async scheduler never contends on it (single event-loop thread), so the
-    lock there is uncontended overhead; the sync scheduler can have a shared
-    ``httpx.Client`` calling in from multiple worker threads at once, where
-    it's load-bearing.
+    internally thread-safe already. ``counter`` is a plain unlocked int:
+    under the sync scheduler's worker threads a racing ``+= 1`` can
+    occasionally lose an increment, which at worst extends the warmup phase
+    by a request — not worth a per-request lock on the async path.
     """
 
     def __init__(self, config: EffectiveConfig, stats: Stats) -> None:
@@ -75,7 +72,6 @@ class _EndpointState:
             window_duration=config.window_duration,
         )
         self.counter = 0
-        self._counter_lock = threading.Lock()
         if config.estimated_rps is not None:
             self.token_bucket = TokenBucket(config.budget_percent, config.estimated_rps)
             self.rate_counter: RollingRateCounter | None = None
@@ -84,10 +80,8 @@ class _EndpointState:
             self.rate_counter = RollingRateCounter(config.rps_window_duration)
         self.stats = stats
 
-    def increment_counter(self) -> int:
-        with self._counter_lock:
-            self.counter += 1
-            return self.counter
+    def increment_counter(self) -> None:
+        self.counter += 1
 
 
 def compute_hedge_delay(state: _EndpointState) -> float:
@@ -113,6 +107,30 @@ def compute_hedge_delay(state: _EndpointState) -> float:
         )
 
     return max(delay, config.min_delay)
+
+
+def begin_request(state: _EndpointState) -> tuple[float, float]:
+    """Per-request bookkeeping run before the race starts, shared by both
+    schedulers: bump the total/warmup counters, feed the RPS estimate into
+    the token bucket, and compute the hedge delay.
+
+    Returns ``(hedge_delay, start)``, where ``start`` is the
+    ``time.monotonic()`` timestamp the request's latency is measured from.
+    """
+    state.stats.increment_total()
+    state.increment_counter()
+    if state.rate_counter is not None:
+        state.rate_counter.increment()
+        state.token_bucket.set_rps(state.rate_counter.rate_per_second())
+    return compute_hedge_delay(state), time.monotonic()
+
+
+def record_race_winner(state: _EndpointState, primary_won: bool) -> None:
+    """Record which side won a race in which a hedge was actually fired."""
+    if primary_won:
+        state.stats.increment_primary_wins()
+    else:
+        state.stats.increment_hedge_wins()
 
 
 def should_hedge(
@@ -158,21 +176,23 @@ def record_outcome(
     exception is re-raised. In hedge-python, by contrast, an exception
     from ``winner_task.result()`` silently skips recording.
 
-    ``get_result`` is ``winner_task.result`` (async) or ``winner_future.result``
-    (sync) — both are plain, non-blocking accessors once the winner is
-    already done, so this function itself needs no async/thread primitive.
+    ``get_result`` is usually ``winner_task.result`` (async) or
+    ``winner_future.result`` (sync) — plain, non-blocking accessors once the
+    winner is already done — so this function itself needs no async/thread
+    primitive. The sync scheduler's no-hedge fast path instead passes the
+    request callable itself, which is why latency is measured when
+    ``get_result`` returns rather than on entry.
     """
-    elapsed = time.monotonic() - start
     breaker_cfg = state.config.circuit_breaker
     try:
         result = get_result()
     except Exception:
-        state.sketch.add(elapsed)
+        state.sketch.add(time.monotonic() - start)
         health.record_result(host, key, host_circuit_breaker, breaker_cfg, False)
         state.stats.increment_errors()
         raise
 
-    state.sketch.add(elapsed)
+    state.sketch.add(time.monotonic() - start)
     ok = classify(result)
     health.record_result(host, key, host_circuit_breaker, breaker_cfg, ok)
     if not ok:
@@ -195,9 +215,9 @@ class HedgeScheduler:
             *host* tier, independent of whichever endpoint's config happens
             to be resolved for a given request. A host isn't owned by any
             one endpoint, so its breaker thresholds must not depend on
-            request arrival order (see ``_should_hedge``/``_finish``, which
-            always pass this rather than the per-request resolved config
-            for the host side of ``HealthRegistry`` calls).
+            request arrival order (``execute_with_hedge`` always passes
+            this rather than the per-request resolved config for the host
+            side of ``HealthRegistry`` calls).
         on_hedge_fired: Called with the key each time a hedge request is
             actually launched, after the idempotency, circuit-breaker, and
             budget gates have all passed. Intended for metrics; see the
@@ -271,15 +291,7 @@ class HedgeScheduler:
             The result from whichever request finishes first.
         """
         state = self.state_for(key, config)
-        state.stats.increment_total()
-
-        state.increment_counter()
-        if state.rate_counter is not None:
-            state.rate_counter.increment()
-            state.token_bucket.set_rps(state.rate_counter.rate_per_second())
-
-        hedge_delay = self.compute_hedge_delay(state)
-        start = time.monotonic()
+        hedge_delay, start = begin_request(state)
 
         primary_task: asyncio.Task[T] = asyncio.create_task(
             cast("Coroutine[Any, Any, T]", primary_func())
@@ -290,7 +302,14 @@ class HedgeScheduler:
         try:
             done, _ = await asyncio.wait(tasks, timeout=hedge_delay)
             if not done:
-                if self._should_hedge(state, host, key, can_hedge):
+                if should_hedge(
+                    state,
+                    host,
+                    key,
+                    can_hedge,
+                    self._health,
+                    self._host_circuit_breaker,
+                ):
                     state.stats.increment_hedged()
                     if self._on_hedge_fired is not None:
                         self._on_hedge_fired(key)
@@ -307,17 +326,23 @@ class HedgeScheduler:
             )
 
             if hedge_task is not None:
-                if winner_task is primary_task:
-                    state.stats.increment_primary_wins()
-                else:
-                    state.stats.increment_hedge_wins()
+                record_race_winner(state, winner_task is primary_task)
                 loser_task = hedge_task if winner_task is primary_task else primary_task
                 if not loser_task.done():
                     loser_task.cancel()
                 await asyncio.wait({loser_task})
                 await self._discard(loser_task, discard)
 
-            return await self._finish(state, host, key, winner_task, start, classify)
+            return record_outcome(
+                state,
+                host,
+                key,
+                self._health,
+                self._host_circuit_breaker,
+                start,
+                winner_task.result,
+                classify,
+            )
         finally:
             # Reached on the happy path too, where every task is already
             # done and this is a no-op. But if this coroutine itself is
@@ -330,14 +355,6 @@ class HedgeScheduler:
                 task.cancel()
             if pending:
                 await asyncio.wait(pending)
-
-    def _should_hedge(
-        self, state: _EndpointState, host: str, key: str, can_hedge: bool
-    ) -> bool:
-        """Check the hedge gates: idempotency, circuit breaker, then budget."""
-        return should_hedge(
-            state, host, key, can_hedge, self._health, self._host_circuit_breaker
-        )
 
     async def _discard(
         self, task: asyncio.Task[T], discard: Callable[[T], Awaitable[None]] | None
@@ -354,30 +371,6 @@ class HedgeScheduler:
         if discard is not None:
             with contextlib.suppress(Exception):
                 await discard(task.result())
-
-    async def _finish(
-        self,
-        state: _EndpointState,
-        host: str,
-        key: str,
-        winner_task: asyncio.Task[T],
-        start: float,
-        classify: Callable[[T], bool],
-    ) -> T:
-        """Record latency and health outcome, then return the result or re-raise.
-
-        See ``record_outcome`` for the shared recording logic.
-        """
-        return record_outcome(
-            state,
-            host,
-            key,
-            self._health,
-            self._host_circuit_breaker,
-            start,
-            winner_task.result,
-            classify,
-        )
 
     def close(self) -> None:
         """Noop."""

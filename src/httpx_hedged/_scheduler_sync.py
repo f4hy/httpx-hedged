@@ -28,7 +28,6 @@ from __future__ import annotations
 import contextlib
 import math
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import TypeVar, cast
@@ -38,8 +37,10 @@ from httpx_hedged._config import CircuitBreakerConfig, EffectiveConfig
 from httpx_hedged._health import HealthRegistry
 from httpx_hedged._scheduler import (
     _EndpointState,
+    begin_request,
     compute_hedge_delay,
     record_outcome,
+    record_race_winner,
     should_hedge,
 )
 from httpx_hedged._stats import StatsRegistry
@@ -98,21 +99,15 @@ class SyncHedgeScheduler:
     def state_for(self, key: str, config: EffectiveConfig) -> _EndpointState:
         """Get or create the state for a key. ``config`` is only used on creation.
 
-        Builds a new ``_EndpointState`` (two ``DDSketch``es, a
-        ``TokenBucket``, and a ``Stats`` lookup) outside ``_states_lock``,
-        so a first-touch cache miss on one key doesn't serialize every
-        other thread's concurrent ``state_for``/``latency_quantile`` calls
-        for unrelated keys behind that construction work. On the rare race
-        where two threads both miss on the same brand-new key, only one
-        constructed state wins the registry insert; the other is discarded.
+        Locked because ``BoundedRegistry`` itself is not thread-safe and a
+        shared sync ``httpx.Client`` can call in from many worker threads
+        at once — unlike the async scheduler, which runs on one event-loop
+        thread and needs no lock here.
         """
         with self._states_lock:
-            existing = self._states.get(key)
-        if existing is not None:
-            return existing
-        new_state = _EndpointState(config, self._stats_registry.for_key(key))
-        with self._states_lock:
-            return self._states.get_or_create(key, lambda: new_state)
+            return self._states.get_or_create(
+                key, lambda: _EndpointState(config, self._stats_registry.for_key(key))
+            )
 
     def latency_quantile(self, key: str, q: float) -> float | None:
         """Return the current estimated latency (seconds) at quantile ``q``
@@ -150,15 +145,25 @@ class SyncHedgeScheduler:
         the loser to finish.
         """
         state = self.state_for(key, config)
-        state.stats.increment_total()
+        hedge_delay, start = begin_request(state)
 
-        state.increment_counter()
-        if state.rate_counter is not None:
-            state.rate_counter.increment()
-            state.token_bucket.set_rps(state.rate_counter.rate_per_second())
-
-        hedge_delay = self.compute_hedge_delay(state)
-        start = time.monotonic()
+        if not can_hedge:
+            # A hedge can never fire for this request, so skip the executor
+            # race entirely and run the primary on the calling thread — a
+            # write-heavy workload would otherwise burn two threads per
+            # request for no possible benefit. record_outcome measures
+            # latency when the callable returns, so recording is identical
+            # to the raced path.
+            return record_outcome(
+                state,
+                host,
+                key,
+                self._health,
+                self._host_circuit_breaker,
+                start,
+                primary_func,
+                classify,
+            )
 
         primary_future: Future[T] = self._executor.submit(primary_func)
         hedge_future: Future[T] | None = None
@@ -166,7 +171,9 @@ class SyncHedgeScheduler:
 
         done, _ = wait(futures, timeout=hedge_delay)
         if not done:
-            if self._should_hedge(state, host, key, can_hedge):
+            if should_hedge(
+                state, host, key, can_hedge, self._health, self._host_circuit_breaker
+            ):
                 state.stats.increment_hedged()
                 if self._on_hedge_fired is not None:
                     self._on_hedge_fired(key)
@@ -181,10 +188,7 @@ class SyncHedgeScheduler:
         )
 
         if hedge_future is not None:
-            if winner_future is primary_future:
-                state.stats.increment_primary_wins()
-            else:
-                state.stats.increment_hedge_wins()
+            record_race_winner(state, winner_future is primary_future)
             loser_future = (
                 hedge_future if winner_future is primary_future else primary_future
             )
@@ -192,14 +196,15 @@ class SyncHedgeScheduler:
             if discard is not None:
                 loser_future.add_done_callback(lambda f: self._discard(f, discard))
 
-        return self._finish(state, host, key, winner_future, start, classify)
-
-    def _should_hedge(
-        self, state: _EndpointState, host: str, key: str, can_hedge: bool
-    ) -> bool:
-        """Check the hedge gates: idempotency, circuit breaker, then budget."""
-        return should_hedge(
-            state, host, key, can_hedge, self._health, self._host_circuit_breaker
+        return record_outcome(
+            state,
+            host,
+            key,
+            self._health,
+            self._host_circuit_breaker,
+            start,
+            winner_future.result,
+            classify,
         )
 
     def _discard(self, future: Future[T], discard: Callable[[T], None]) -> None:
@@ -224,30 +229,6 @@ class SyncHedgeScheduler:
             return
         with contextlib.suppress(Exception):
             discard(future.result())
-
-    def _finish(
-        self,
-        state: _EndpointState,
-        host: str,
-        key: str,
-        winner_future: Future[T],
-        start: float,
-        classify: Callable[[T], bool],
-    ) -> T:
-        """Record latency and health outcome, then return the result or re-raise.
-
-        See ``record_outcome`` for the shared recording logic.
-        """
-        return record_outcome(
-            state,
-            host,
-            key,
-            self._health,
-            self._host_circuit_breaker,
-            start,
-            winner_future.result,
-            classify,
-        )
 
     def close(self) -> None:
         """Shut down the internal thread pool.

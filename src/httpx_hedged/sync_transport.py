@@ -26,15 +26,21 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from httpx_hedged._config import EndpointConfig, HedgeConfig
-from httpx_hedged._health import HealthRegistry
-from httpx_hedged._matcher import EndpointMatcher, Route
+from httpx_hedged._config import HedgeConfig
+from httpx_hedged._matcher import Route
 from httpx_hedged._scheduler_sync import SyncHedgeScheduler
-from httpx_hedged._stats import StatsRegistry
-from httpx_hedged.transport import _resolve_request
+from httpx_hedged.transport import (
+    _classify_for,
+    _HedgedTransportCore,
+    _resolve_request,
+)
 
 
-class SyncHedgedTransport(httpx.BaseTransport):
+def _close_response(response: httpx.Response) -> None:
+    response.close()
+
+
+class SyncHedgedTransport(_HedgedTransportCore, httpx.BaseTransport):
     """An httpx sync transport that adds adaptive, per-endpoint hedged requests.
 
     Wraps a single inner transport (default: ``httpx.HTTPTransport()``, one
@@ -89,6 +95,8 @@ class SyncHedgedTransport(httpx.BaseTransport):
             ``close()`` always closes ``inner`` too.
     """
 
+    _scheduler: SyncHedgeScheduler
+
     def __init__(
         self,
         inner: httpx.BaseTransport | None = None,
@@ -100,10 +108,7 @@ class SyncHedgedTransport(httpx.BaseTransport):
         executor: ThreadPoolExecutor | None = None,
     ) -> None:
         self._inner = inner or httpx.HTTPTransport()
-        self._default_config = default_config or HedgeConfig()
-        self._matcher = EndpointMatcher()
-        self._stats = StatsRegistry()
-        self._health = HealthRegistry(on_circuit_open=on_circuit_open)
+        self._init_core(default_config, on_circuit_open, routes)
         self._scheduler = SyncHedgeScheduler(
             self._health,
             self._stats,
@@ -113,71 +118,14 @@ class SyncHedgedTransport(httpx.BaseTransport):
             executor=executor,
         )
 
-        for route in routes or []:
-            self.register(
-                route.method, route.path_pattern, route.config, name=route.name
-            )
-
-    def register(
-        self,
-        method: str,
-        path_pattern: str,
-        config: EndpointConfig,
-        *,
-        name: str | None = None,
-    ) -> str:
-        """Register a per-endpoint hedge config for a method + path pattern.
-
-        Must be called before request traffic starts — not safe to call
-        concurrently with ``handle_request`` (unlike hedge state, which is
-        safe for concurrent multi-threaded access, route registration
-        itself has no locking, matching the async transport's same
-        one-time-setup assumption).
-
-        ``path_pattern`` segments may contain ``{name}`` placeholders or a
-        bare ``*`` to match any single path segment (e.g.
-        ``/api/v1/users/{id}``). Routes are matched in registration order,
-        first match wins, so register more specific patterns first.
-
-        Returns the resolved endpoint name (used as the key in ``stats``
-        and as the value for ``extensions={"hedge_endpoint": name}``).
-        """
-        return self._matcher.register(method, path_pattern, config, name=name)
-
-    @property
-    def stats(self) -> StatsRegistry:
-        """Per-endpoint and aggregate hedge statistics."""
-        return self._stats
-
-    @property
-    def health(self) -> HealthRegistry:
-        """Host- and endpoint-level circuit breaker state."""
-        return self._health
-
-    def latency_quantile(self, key: str, q: float) -> float | None:
-        """Return the current estimated latency (seconds) at quantile ``q``
-        for a tracked key, or None if nothing has been recorded for that
-        key yet.
-
-        ``key`` uses the same ``"endpoint:<name>"`` / ``"host:<hostname>"``
-        format as ``stats`` and ``health``.
-        """
-        return self._scheduler.latency_quantile(key, q)
-
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Handle an outgoing request with adaptive, per-endpoint hedging."""
-        key, host, resolved, can_hedge, treat_5xx_as_failure = _resolve_request(
+        key, host, resolved, can_hedge = _resolve_request(
             self._matcher, self._default_config, request
         )
 
         def do_request() -> httpx.Response:
             return self._inner.handle_request(request)
-
-        def classify(response: httpx.Response) -> bool:
-            return not (treat_5xx_as_failure and response.status_code >= 500)
-
-        def discard(response: httpx.Response) -> None:
-            response.close()
 
         return self._scheduler.execute_with_hedge(
             key=key,
@@ -185,9 +133,9 @@ class SyncHedgedTransport(httpx.BaseTransport):
             config=resolved,
             primary_func=do_request,
             hedge_func=do_request,
-            classify=classify,
+            classify=_classify_for(resolved),
             can_hedge=can_hedge,
-            discard=discard,
+            discard=_close_response,
         )
 
     def close(self) -> None:

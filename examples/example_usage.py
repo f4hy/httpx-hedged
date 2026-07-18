@@ -127,10 +127,9 @@ def print_report(transport: HedgedTransport | SyncHedgedTransport) -> None:
         print(f"{key:<16} {state.name if state else 'n/a'}")
 
 
-async def wait_for_server(client: httpx.AsyncClient) -> None:
+def wait_for_server() -> None:
     try:
-        response = await client.get(f"{BASE_URL}/fast", timeout=5.0)
-        response.raise_for_status()
+        httpx.get(f"{BASE_URL}/fast", timeout=5.0).raise_for_status()
     except httpx.HTTPError:
         print(
             f"Could not reach {BASE_URL}: is examples/app.py running?",
@@ -140,9 +139,6 @@ async def wait_for_server(client: httpx.AsyncClient) -> None:
 
 
 async def main() -> None:
-    async with httpx.AsyncClient() as plain_client:
-        await wait_for_server(plain_client)
-
     transport = HedgedTransport(
         on_hedge_fired=on_hedge_fired,
         on_circuit_open=on_circuit_open,
@@ -161,43 +157,32 @@ def send_one_sync(client: httpx.Client, route: str) -> None:
     response.raise_for_status()
 
 
-def drive_route_sync(client: httpx.Client, route: str) -> None:
+def drive_route_sync(
+    client: httpx.Client, route: str, pool: ThreadPoolExecutor
+) -> None:
     print(f"\nSending {REQUESTS_PER_ROUTE} requests to /{route} ...")
     start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
-        futures = [
-            pool.submit(send_one_sync, client, route) for _ in range(REQUESTS_PER_ROUTE)
-        ]
-        for future in futures:
-            future.result()
+    futures = [
+        pool.submit(send_one_sync, client, route) for _ in range(REQUESTS_PER_ROUTE)
+    ]
+    for future in futures:
+        future.result()
     print(f"  done in {time.perf_counter() - start:.2f}s")
 
 
-def wait_for_server_sync(client: httpx.Client) -> None:
-    try:
-        response = client.get(f"{BASE_URL}/fast", timeout=5.0)
-        response.raise_for_status()
-    except httpx.HTTPError:
-        print(
-            f"Could not reach {BASE_URL}: is examples/app.py running?",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
 def main_sync() -> None:
-    with httpx.Client() as plain_client:
-        wait_for_server_sync(plain_client)
-
     transport = SyncHedgedTransport(
         on_hedge_fired=on_hedge_fired,
         on_circuit_open=on_circuit_open,
     )
     register_routes(transport)
 
-    with httpx.Client(transport=transport) as client:
+    with (
+        httpx.Client(transport=transport) as client,
+        ThreadPoolExecutor(max_workers=CONCURRENCY) as pool,
+    ):
         for route in ROUTES:
-            drive_route_sync(client, route)
+            drive_route_sync(client, route, pool)
 
     print_report(transport)
 
@@ -210,6 +195,7 @@ if __name__ == "__main__":
         help="use SyncHedgedTransport with httpx.Client instead of the async transport",
     )
     args = parser.parse_args()
+    wait_for_server()
     if args.sync:
         main_sync()
     else:
