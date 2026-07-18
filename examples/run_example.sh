@@ -3,7 +3,10 @@
 # client against it, and prints the stats report, then tears the server
 # down. Run from anywhere:
 #
-#   ./examples/run_example.sh
+#   ./examples/run_example.sh          # async client (HedgedTransport)
+#   ./examples/run_example.sh --sync   # sync client (SyncHedgedTransport)
+#
+# Any arguments are forwarded to example_usage.py.
 
 set -euo pipefail
 
@@ -40,4 +43,4 @@ for _ in $(seq 1 50); do
 done
 
 echo "==> Running example_usage.py"
-uv run python examples/example_usage.py
+uv run python examples/example_usage.py "$@"

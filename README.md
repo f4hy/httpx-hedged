@@ -31,6 +31,48 @@ With no configuration, `HedgedTransport` learns a p90 latency estimate per
 host (via a [DDSketch](https://arxiv.org/abs/2004.08604) quantile sketch)
 and fires a hedge request whenever the primary exceeds it. 
 
+### Sync clients
+
+`SyncHedgedTransport` is the same adaptive hedging (same `HedgeConfig`,
+`EndpointConfig`, stats, and circuit breaker) for a plain `httpx.Client`:
+
+```python
+import httpx
+from httpx_hedged import EndpointConfig, SyncHedgedTransport
+
+transport = SyncHedgedTransport()
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+
+with httpx.Client(transport=transport) as client:
+    response = client.get("https://api.example.com/data")
+    print(response.json())
+```
+
+> [!TIP]
+> Prefer the async `HedgedTransport` if you can. The sync version exists
+> for codebases where async isn't an option.
+
+Races run on a thread pool (`ThreadPoolExecutor`, default 200 workers,
+configurable via `max_workers=`/`executor=`), and a losing thread blocked
+on a socket read can't be cancelled the way an `asyncio` task can.
+Limitations:
+
+- **Threads per request**: the calling thread plus a pool worker, plus a
+  third during a hedge race, which scales worse than async at high
+  concurrency.
+- **Losers run to completion**, doing full duplicate backend work and
+  holding their pooled connection until they finish or time out.
+- **`close()` blocks** until every orphaned loser finishes.
+- **No shared state** with an async `HedgedTransport` hitting the same
+  backend.
+
+> [!WARNING]
+> A request timeout is mandatory with `SyncHedgedTransport`: a losing
+> request can't be interrupted, and hung losers pile up until the thread
+> pool is exhausted.
+
+See "Race and cancel" below for the details.
+
 ## Why per-endpoint?
 
 A single host can host wildly different endpoints. Learning one latency
@@ -158,6 +200,20 @@ if the method is idempotent: the primary and hedge send the same
 `httpx.Request` object, and a body backed by a one-shot stream can't be
 safely read twice.
 
+`SyncHedgedTransport` races primary and hedge on a thread pool instead of
+`asyncio` tasks. The "cancel" step is where the two genuinely diverge:
+`asyncio.Task.cancel()` interrupts a coroutine at its next `await`, almost
+immediately, but there's no equivalent way to interrupt an OS thread blocked
+in a socket read. So the sync scheduler returns the winner's result right
+away without waiting on the loser, and the loser keeps running in the
+background until its blocking call finally returns on its own, at which
+point its result is discarded.
+
+> [!WARNING]
+> This makes a configured request timeout load-bearing for
+> `SyncHedgedTransport` specifically: without one, a losing request can
+> occupy its thread indefinitely.
+
 ### DDSketch quantile estimator
 
 Each tracked key (an endpoint, or the per-host fallback) gets its own
@@ -198,10 +254,11 @@ HALF_OPEN ──(trial requests mostly succeed)──▶ CLOSED
 HALF_OPEN ──(trial requests mostly fail)────▶ OPEN
 ```
 
-Note: health is recorded from the *winning* task's outcome only. A
-cancelled loser's real outcome is unknowable, and losers are cancelled
-deliberately (not doing so would defeat the point of reducing load on a
-struggling backend).
+> [!NOTE]
+> Health is recorded from the *winning* task's outcome only. A cancelled
+> loser's real outcome is unknowable, and losers are cancelled
+> deliberately (not doing so would defeat the point of reducing load on a
+> struggling backend).
 
 ## Observability
 
@@ -284,8 +341,9 @@ sent. `on_circuit_open` is called once per OPEN transition (not on every
 suppressed hedge while it stays open), so it's safe to wire straight into
 an alerting/paging pipeline without flooding it.
 
-Both callbacks run synchronously on the request path, so keep them fast
-(increment a counter, log a line); don't do network I/O in them directly.
+> [!IMPORTANT]
+> Both callbacks run synchronously on the request path, so keep them fast
+> (increment a counter, log a line); don't do network I/O in them directly.
 
 ## Relationship to hedge-python
 
