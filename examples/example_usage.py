@@ -15,22 +15,29 @@ latency profile:
 Every hedge fire is logged to stdout as it happens (via on_hedge_fired),
 and a stats/circuit-breaker report is printed at the end.
 
+Runs against the async HedgedTransport (httpx.AsyncClient) by default;
+pass --sync to drive the same load through SyncHedgedTransport
+(httpx.Client on a thread pool) instead. The report at the end is the
+same either way.
+
 Usage: start examples/app.py first (see its docstring), then:
 
-    uv run python examples/example_usage.py
+    uv run python examples/example_usage.py [--sync]
 
-Or just run run_example.sh, which does both.
+Or just run run_example.sh, which does both (and forwards any flags).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from httpx_hedged import EndpointConfig, HedgedTransport
+from httpx_hedged import EndpointConfig, HedgedTransport, SyncHedgedTransport
 
 BASE_URL = "http://127.0.0.1:8000"
 ROUTES = ["fast", "slow", "flaky"]
@@ -73,7 +80,23 @@ async def drive_route(client: httpx.AsyncClient, route: str) -> None:
     print(f"  done in {time.perf_counter() - start:.2f}s")
 
 
-def print_report(transport: HedgedTransport) -> None:
+def register_routes(transport: HedgedTransport | SyncHedgedTransport) -> None:
+    transport.register("GET", "/fast", EndpointConfig(percentile=0.90), name="fast")
+    transport.register(
+        "GET",
+        "/slow",
+        EndpointConfig(percentile=0.90, estimated_rps=SLOW_ESTIMATED_RPS),
+        name="slow",
+    )
+    transport.register(
+        "GET",
+        "/flaky",
+        EndpointConfig(percentile=0.90, estimated_rps=FLAKY_ESTIMATED_RPS),
+        name="flaky",
+    )
+
+
+def print_report(transport: HedgedTransport | SyncHedgedTransport) -> None:
     print("\n=== per-endpoint stats ===")
     header = (
         f"{'key':<16} {'total':>6} {'hedged':>7} {'hedge_wins':>11} "
@@ -124,19 +147,7 @@ async def main() -> None:
         on_hedge_fired=on_hedge_fired,
         on_circuit_open=on_circuit_open,
     )
-    transport.register("GET", "/fast", EndpointConfig(percentile=0.90), name="fast")
-    transport.register(
-        "GET",
-        "/slow",
-        EndpointConfig(percentile=0.90, estimated_rps=SLOW_ESTIMATED_RPS),
-        name="slow",
-    )
-    transport.register(
-        "GET",
-        "/flaky",
-        EndpointConfig(percentile=0.90, estimated_rps=FLAKY_ESTIMATED_RPS),
-        name="flaky",
-    )
+    register_routes(transport)
 
     async with httpx.AsyncClient(transport=transport) as client:
         for route in ROUTES:
@@ -145,5 +156,61 @@ async def main() -> None:
     print_report(transport)
 
 
+def send_one_sync(client: httpx.Client, route: str) -> None:
+    response = client.get(f"{BASE_URL}/{route}")
+    response.raise_for_status()
+
+
+def drive_route_sync(client: httpx.Client, route: str) -> None:
+    print(f"\nSending {REQUESTS_PER_ROUTE} requests to /{route} ...")
+    start = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+        futures = [
+            pool.submit(send_one_sync, client, route) for _ in range(REQUESTS_PER_ROUTE)
+        ]
+        for future in futures:
+            future.result()
+    print(f"  done in {time.perf_counter() - start:.2f}s")
+
+
+def wait_for_server_sync(client: httpx.Client) -> None:
+    try:
+        response = client.get(f"{BASE_URL}/fast", timeout=5.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        print(
+            f"Could not reach {BASE_URL}: is examples/app.py running?",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def main_sync() -> None:
+    with httpx.Client() as plain_client:
+        wait_for_server_sync(plain_client)
+
+    transport = SyncHedgedTransport(
+        on_hedge_fired=on_hedge_fired,
+        on_circuit_open=on_circuit_open,
+    )
+    register_routes(transport)
+
+    with httpx.Client(transport=transport) as client:
+        for route in ROUTES:
+            drive_route_sync(client, route)
+
+    print_report(transport)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="use SyncHedgedTransport with httpx.Client instead of the async transport",
+    )
+    args = parser.parse_args()
+    if args.sync:
+        main_sync()
+    else:
+        asyncio.run(main())

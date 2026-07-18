@@ -31,6 +31,40 @@ With no configuration, `HedgedTransport` learns a p90 latency estimate per
 host (via a [DDSketch](https://arxiv.org/abs/2004.08604) quantile sketch)
 and fires a hedge request whenever the primary exceeds it. 
 
+### Sync clients
+
+`SyncHedgedTransport` is the same adaptive hedging (same `HedgeConfig`,
+`EndpointConfig`, stats, and circuit breaker) for a plain `httpx.Client`:
+
+```python
+import httpx
+from httpx_hedged import EndpointConfig, SyncHedgedTransport
+
+transport = SyncHedgedTransport()
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+
+with httpx.Client(transport=transport) as client:
+    response = client.get("https://api.example.com/data")
+    print(response.json())
+```
+
+**Prefer the async `HedgedTransport` if you can.** Races run on a thread
+pool (`ThreadPoolExecutor`, default 200 workers, configurable via
+`max_workers=`/`executor=`), and a losing thread blocked on a socket read
+can't be cancelled the way an `asyncio` task can. Limitations:
+
+- **A request timeout is mandatory** — a loser can't be interrupted, and
+  hung losers pile up until the thread pool is exhausted.
+- **Threads per request**: the calling thread plus a pool worker, plus a
+  third during a hedge race — scales worse than async at high concurrency.
+- **Losers run to completion**, doing full duplicate backend work and
+  holding their pooled connection until they finish or time out.
+- **`close()` blocks** until every orphaned loser finishes.
+- **No shared state** with an async `HedgedTransport` hitting the same
+  backend.
+
+See "Race and cancel" below for the details.
+
 ## Why per-endpoint?
 
 A single host can host wildly different endpoints. Learning one latency
@@ -157,6 +191,17 @@ duplicating side effects. A request with a body is also never hedged, even
 if the method is idempotent: the primary and hedge send the same
 `httpx.Request` object, and a body backed by a one-shot stream can't be
 safely read twice.
+
+`SyncHedgedTransport` races primary and hedge on a thread pool instead of
+`asyncio` tasks. The "cancel" step is where the two genuinely diverge:
+`asyncio.Task.cancel()` interrupts a coroutine at its next `await`, almost
+immediately, but there's no equivalent way to interrupt an OS thread blocked
+in a socket read. So the sync scheduler returns the winner's result right
+away without waiting on the loser, and the loser keeps running in the
+background until its blocking call finally returns on its own, at which
+point its result is discarded. This makes a configured request timeout
+load-bearing for `SyncHedgedTransport` specifically: without one, a losing
+request can occupy its thread indefinitely.
 
 ### DDSketch quantile estimator
 

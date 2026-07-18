@@ -1,81 +1,51 @@
-"""Hedged transport for httpx.AsyncClient.
+"""Hedged transport for httpx.Client (sync).
 
 Usage::
 
     import httpx
-    from httpx_hedged import EndpointConfig, HedgeConfig, HedgedTransport
+    from httpx_hedged import EndpointConfig, HedgeConfig, SyncHedgedTransport
 
-    transport = HedgedTransport()
+    transport = SyncHedgedTransport()
     transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
     transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.90))
 
-    async with httpx.AsyncClient(transport=transport) as client:
-        resp = await client.get("https://api.example.com/api/v1/fast-lookup")
+    with httpx.Client(transport=transport) as client:
+        resp = client.get("https://api.example.com/api/v1/fast-lookup")
+
+Same adaptive per-endpoint hedging as ``HedgedTransport``, but races the
+primary and hedge requests on a thread pool instead of ``asyncio`` tasks,
+since a sync client has no event loop. See ``_scheduler_sync``'s module
+docstring for what that implies about loser-thread cleanup and why a
+request timeout on the inner transport is load-bearing here.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from httpx_hedged._config import EffectiveConfig, EndpointConfig, HedgeConfig, resolve
+from httpx_hedged._config import EndpointConfig, HedgeConfig
 from httpx_hedged._health import HealthRegistry
 from httpx_hedged._matcher import EndpointMatcher, Route
-from httpx_hedged._scheduler import HedgeScheduler, extract_host
+from httpx_hedged._scheduler_sync import SyncHedgeScheduler
 from httpx_hedged._stats import StatsRegistry
-
-_IDEMPOTENT_METHODS = ("GET", "HEAD", "OPTIONS")
-
-
-def _has_body(request: httpx.Request) -> bool:
-    """Whether a request carries a body that a hedge can't safely re-send.
-
-    The primary and hedge both send the same ``httpx.Request`` object; a
-    body backed by a one-shot async stream (e.g. ``content=some_generator``)
-    would be consumed by whichever of the two reads it first, corrupting or
-    failing the other. Idempotent methods essentially never carry a body in
-    normal use, so this only ever changes behavior for that edge case.
-    """
-    content_length = request.headers.get("content-length")
-    if content_length not in (None, "0"):
-        return True
-    return request.headers.get("transfer-encoding", "").lower() == "chunked"
+from httpx_hedged.transport import _resolve_request
 
 
-def _resolve_request(
-    matcher: EndpointMatcher, default_config: HedgeConfig, request: httpx.Request
-) -> tuple[str, str, EffectiveConfig, bool, bool]:
-    """Resolve a request to its hedge key, host, effective config, hedge
-    eligibility, and 5xx-as-failure flag.
+class SyncHedgedTransport(httpx.BaseTransport):
+    """An httpx sync transport that adds adaptive, per-endpoint hedged requests.
 
-    Pure computation, independent of sync/async — shared by
-    ``HedgedTransport`` and ``SyncHedgedTransport``.
-
-    Returns:
-        ``(key, host, resolved, can_hedge, treat_5xx_as_failure)``.
-    """
-    host = extract_host(str(request.url))
-    route = matcher.match(request)
-
-    if route is not None:
-        key = f"endpoint:{route.name}"
-        resolved = resolve(route.config, default_config)
-    else:
-        key = f"host:{host}"
-        resolved = resolve(None, default_config)
-
-    can_hedge = request.method.upper() in _IDEMPOTENT_METHODS and not _has_body(request)
-    return key, host, resolved, can_hedge, resolved.circuit_breaker.treat_5xx_as_failure
-
-
-class HedgedTransport(httpx.AsyncBaseTransport):
-    """An httpx async transport that adds adaptive, per-endpoint hedged requests.
-
-    Wraps a single inner transport (default: ``httpx.AsyncHTTPTransport``,
-    one connection pool) and races a backup request when the primary
-    exceeds its estimated latency percentile, or a hardcoded delay, for
-    endpoints registered with ``EndpointConfig(hedge_delay=...)``.
+    Wraps a single inner transport (default: ``httpx.HTTPTransport()``, one
+    connection pool) and races a backup request when the primary exceeds
+    its estimated latency percentile, or a hardcoded delay, for endpoints
+    registered with ``EndpointConfig(hedge_delay=...)``. Functionally
+    equivalent to ``HedgedTransport`` (same config, matching, stats, and
+    circuit-breaker semantics) for use with ``httpx.Client`` instead of
+    ``httpx.AsyncClient`` — it's a fully independent instance with its own
+    state, not one that shares hedge state with an async ``HedgedTransport``
+    hitting the same backend.
 
     Endpoints are identified by registering method + path patterns via
     ``register()``; a request can also be tagged directly with
@@ -87,9 +57,15 @@ class HedgedTransport(httpx.AsyncBaseTransport):
     primary request is always still sent and its result/exception is always
     returned normally).
 
+    Since a sync ``httpx.Client`` is commonly shared and called from
+    multiple worker threads, unlike ``HedgedTransport``, this races the
+    primary and hedge requests on an internal ``ThreadPoolExecutor`` rather
+    than ``asyncio`` tasks. See the module docstring for what that changes
+    about loser-cleanup timing and why a request timeout matters here.
+
     Args:
         inner: The underlying transport to wrap. Defaults to a new
-            ``httpx.AsyncHTTPTransport()``.
+            ``httpx.HTTPTransport()``.
         default_config: Hedge configuration used for any request that
             doesn't match a registered endpoint. Defaults to ``HedgeConfig()``.
         routes: Endpoints to register up front (equivalent to calling
@@ -102,26 +78,39 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             (``scope`` is ``"host"`` or ``"endpoint"``). Intended for
             alerting; see the README's observability section for an
             example.
+        max_workers: Size of the internal thread pool used to race primary
+            and hedge requests. Ignored if ``executor`` is given. Defaults
+            to 200 (2x httpx's own default connection-pool ceiling), to
+            leave headroom for orphaned loser requests piling up alongside
+            legitimate concurrent primary/hedge work.
+        executor: A pre-built ``ThreadPoolExecutor`` to use instead of
+            letting this transport create one. Still shut down by
+            ``close()`` regardless of who constructed it, matching how
+            ``close()`` always closes ``inner`` too.
     """
 
     def __init__(
         self,
-        inner: httpx.AsyncBaseTransport | None = None,
+        inner: httpx.BaseTransport | None = None,
         default_config: HedgeConfig | None = None,
         routes: list[Route] | None = None,
         on_hedge_fired: Callable[[str], None] | None = None,
         on_circuit_open: Callable[[str, str], None] | None = None,
+        max_workers: int | None = None,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
-        self._inner = inner or httpx.AsyncHTTPTransport()
+        self._inner = inner or httpx.HTTPTransport()
         self._default_config = default_config or HedgeConfig()
         self._matcher = EndpointMatcher()
         self._stats = StatsRegistry()
         self._health = HealthRegistry(on_circuit_open=on_circuit_open)
-        self._scheduler = HedgeScheduler(
+        self._scheduler = SyncHedgeScheduler(
             self._health,
             self._stats,
             self._default_config.circuit_breaker,
             on_hedge_fired=on_hedge_fired,
+            max_workers=max_workers,
+            executor=executor,
         )
 
         for route in routes or []:
@@ -138,6 +127,12 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         name: str | None = None,
     ) -> str:
         """Register a per-endpoint hedge config for a method + path pattern.
+
+        Must be called before request traffic starts — not safe to call
+        concurrently with ``handle_request`` (unlike hedge state, which is
+        safe for concurrent multi-threaded access, route registration
+        itself has no locking, matching the async transport's same
+        one-time-setup assumption).
 
         ``path_pattern`` segments may contain ``{name}`` placeholders or a
         bare ``*`` to match any single path segment (e.g.
@@ -165,33 +160,26 @@ class HedgedTransport(httpx.AsyncBaseTransport):
         key yet.
 
         ``key`` uses the same ``"endpoint:<name>"`` / ``"host:<hostname>"``
-        format as ``stats`` and ``health``. For example, after
-        ``name = transport.register("GET", "/search", ...)``, query it with
-        ``transport.latency_quantile(f"endpoint:{name}", 0.9)`` for the
-        current learned p90::
-
-            p90 = transport.latency_quantile(f"endpoint:{name}", 0.9)
-            if p90 is not None:
-                print(f"{name} p90: {p90 * 1000:.1f}ms")
+        format as ``stats`` and ``health``.
         """
         return self._scheduler.latency_quantile(key, q)
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Handle an outgoing request with adaptive, per-endpoint hedging."""
         key, host, resolved, can_hedge, treat_5xx_as_failure = _resolve_request(
             self._matcher, self._default_config, request
         )
 
-        async def do_request() -> httpx.Response:
-            return await self._inner.handle_async_request(request)
+        def do_request() -> httpx.Response:
+            return self._inner.handle_request(request)
 
         def classify(response: httpx.Response) -> bool:
             return not (treat_5xx_as_failure and response.status_code >= 500)
 
-        async def discard(response: httpx.Response) -> None:
-            await response.aclose()
+        def discard(response: httpx.Response) -> None:
+            response.close()
 
-        return await self._scheduler.execute_with_hedge(
+        return self._scheduler.execute_with_hedge(
             key=key,
             host=host,
             config=resolved,
@@ -202,7 +190,12 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             discard=discard,
         )
 
-    async def aclose(self) -> None:
-        """Close the transport and the wrapped inner transport."""
+    def close(self) -> None:
+        """Close the transport, its thread pool, and the wrapped inner transport.
+
+        Blocks until any orphaned loser thread finishes — see the module
+        docstring: this can hang if a loser is blocked on a socket with no
+        timeout configured on the inner transport.
+        """
         self._scheduler.close()
-        await self._inner.aclose()
+        self._inner.close()
