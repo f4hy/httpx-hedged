@@ -306,6 +306,11 @@ dependencies = [
     { name = "httpx" },
 ]
 
+[package.optional-dependencies]
+rust = [
+    { name = "rddsketch", marker = "python_full_version >= '3.11'" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
@@ -324,7 +329,9 @@ examples = [
 requires-dist = [
     { name = "ddsketch", specifier = ">=3.0.1" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "rddsketch", marker = "python_full_version >= '3.11' and extra == 'rust'", specifier = ">=0.0.1" },
 ]
+provides-extras = ["rust"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -904,6 +911,19 @@ wheels = [
 [package.optional-dependencies]
 global = [
     { name = "platformdirs" },
+]
+
+[[package]]
+name = "rddsketch"
+version = "0.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/da/eb3d770178b941a603bf39c53bd46f26bab1db002d5fca1f362249a305e6/rddsketch-0.0.1.tar.gz", hash = "sha256:d831098cd72ef3aaa81f5ceef0ac0f7cca629c3d6e6cdecbf64f0f94d2ba87a0", size = 16653, upload-time = "2026-07-13T04:39:21.164Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/5c/21a0e1cb35b32ad3e5dc2a5d6b233ee10ccac6523acfa3f15957e73753cf/rddsketch-0.0.1-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:7011d69a4a869a8fa17c6444ca2c4f5f32e95911cf4d05650c2c28ae1e4e5905", size = 255689, upload-time = "2026-07-13T04:39:15.001Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/7a/bca267281669c7fc675b2a1050e3f7a7a17ae73d2939a80098ba310de253/rddsketch-0.0.1-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:493a360dd1831eef28d9c8bda9f5f46dd3eff16a84ae97383743da8ada059b24", size = 257458, upload-time = "2026-07-13T04:39:16.419Z" },
+    { url = "https://files.pythonhosted.org/packages/93/e1/a10a9ed1b392d089737932c1b06178266f2c4cb42389917ec0c549770570/rddsketch-0.0.1-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0c70c59e1e94ff649fc54f50e90d4d79aae998fbe84563652c47c09f0ff16232", size = 287238, upload-time = "2026-07-13T04:39:17.615Z" },
+    { url = "https://files.pythonhosted.org/packages/95/58/dcea3c029e5e969ca7f35e9d13ec2cf3e9d7bcab58921c14181354ce8725/rddsketch-0.0.1-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:006c07d4efe41926d4cc4844974b7d4b2779d00cdad2ff8a27bbe5977cd8d688", size = 291025, upload-time = "2026-07-13T04:39:18.847Z" },
+    { url = "https://files.pythonhosted.org/packages/87/2d/65d6efe57a5bcf81a39554ba041a98faea32d281b9ebf43886e5b6d10edd/rddsketch-0.0.1-cp311-abi3-win_amd64.whl", hash = "sha256:db8ef2d5a044527ca4587a696f4e594fb9e00f9ec573e3beebed1b9db9e35f9c", size = 150013, upload-time = "2026-07-13T04:39:20.019Z" },
 ]
 
 [[package]]
