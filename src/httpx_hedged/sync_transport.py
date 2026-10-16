@@ -21,7 +21,14 @@ request timeout on the inner transport is load-bearing here.
 
 from __future__ import annotations
 
-import httpx
+try:
+    import httpx
+except ImportError as exc:  # pragma: no cover - exercised via subprocess test
+    raise ImportError(
+        "httpx_hedged.SyncHedgedTransport requires httpx; install it with "
+        "`pip install httpx-hedged[httpx]`, or use "
+        "httpx_hedged.httpx2.SyncHedgedTransport with httpx2"
+    ) from exc
 
 from httpx_hedged._core import SyncHedgingCore
 
