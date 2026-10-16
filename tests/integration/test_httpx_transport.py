@@ -1,22 +1,30 @@
-"""Integration tests for HedgedTransport against a stub inner transport."""
+"""Integration tests for HedgedTransport against a stub inner transport.
+
+Every test runs once per backend (httpx and httpx2) via the ``backend``
+fixture.
+"""
 
 from __future__ import annotations
 
-import httpx
+from types import SimpleNamespace
+
 import pytest
 
 from httpx_hedged import CircuitBreakerConfig, CircuitState, EndpointConfig, HedgeConfig
 from httpx_hedged._config import resolve
-from httpx_hedged.transport import HedgedTransport
-from tests.conftest import ScriptedTransport, delayed_response, failing
+from tests.conftest import delayed_response, failing
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_passthrough_returns_response_and_records_stats() -> None:
-    inner = ScriptedTransport([delayed_response(0.0)])
-    transport = HedgedTransport(inner=inner, default_config=HedgeConfig(min_delay=0.0))
-    async with httpx.AsyncClient(transport=transport) as client:
+async def test_passthrough_returns_response_and_records_stats(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.0)])
+    transport = backend.HedgedTransport(
+        inner=inner, default_config=HedgeConfig(min_delay=0.0)
+    )
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.get("https://api.example.com/anything")
     assert resp.status_code == 200
 
@@ -25,16 +33,18 @@ async def test_passthrough_returns_response_and_records_stats() -> None:
     await transport.aclose()
 
 
-async def test_two_endpoints_share_one_transport_with_independent_delays() -> None:
+async def test_two_endpoints_share_one_transport_with_independent_delays(
+    backend: SimpleNamespace,
+) -> None:
     """Regression test for the scenario in the filed hedge-python issue:
 
     GET /api/v1/fast-lookup (fast, high RPS) and GET /api/v1/bulk-export
     (slow, low RPS) share one HedgedTransport/one inner transport, but each
     endpoint's hedge delay reflects only its own traffic.
     """
-    inner = ScriptedTransport([delayed_response(0.0)])
+    inner = backend.ScriptedTransport([delayed_response(0.0)])
     default_config = HedgeConfig(min_delay=0.0, warmup_requests=0)
-    transport = HedgedTransport(inner=inner, default_config=default_config)
+    transport = backend.HedgedTransport(inner=inner, default_config=default_config)
     transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.9))
     transport.register("GET", "/api/v1/bulk-export", EndpointConfig(percentile=0.9))
 
@@ -68,19 +78,23 @@ async def test_two_endpoints_share_one_transport_with_independent_delays() -> No
     await transport.aclose()
 
 
-async def test_explicit_extension_override_selects_endpoint_config() -> None:
-    inner = ScriptedTransport([delayed_response(0.0)])
-    transport = HedgedTransport(inner=inner, default_config=HedgeConfig(min_delay=0.0))
+async def test_explicit_extension_override_selects_endpoint_config(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.0)])
+    transport = backend.HedgedTransport(
+        inner=inner, default_config=HedgeConfig(min_delay=0.0)
+    )
     transport.register(
         "GET", "/does/not/match", EndpointConfig(hedge_delay=0.5), name="pinned"
     )
 
-    request = httpx.Request(
+    request = backend.lib.Request(
         "GET",
         "https://api.example.com/anything",
         extensions={"hedge_endpoint": "pinned"},
     )
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.send(request)
     assert resp.status_code == 200
     snap = transport.stats.snapshot("endpoint:pinned")
@@ -89,10 +103,14 @@ async def test_explicit_extension_override_selects_endpoint_config() -> None:
     await transport.aclose()
 
 
-async def test_unmatched_request_falls_back_to_host_default() -> None:
-    inner = ScriptedTransport([delayed_response(0.0)])
-    transport = HedgedTransport(inner=inner, default_config=HedgeConfig(min_delay=0.0))
-    async with httpx.AsyncClient(transport=transport) as client:
+async def test_unmatched_request_falls_back_to_host_default(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.0)])
+    transport = backend.HedgedTransport(
+        inner=inner, default_config=HedgeConfig(min_delay=0.0)
+    )
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.get("https://api.example.com/unregistered")
     assert resp.status_code == 200
     snap = transport.stats.snapshot("host:api.example.com")
@@ -101,15 +119,15 @@ async def test_unmatched_request_falls_back_to_host_default() -> None:
     await transport.aclose()
 
 
-async def test_post_never_hedges_even_when_slow() -> None:
-    inner = ScriptedTransport([delayed_response(0.05)])
-    transport = HedgedTransport(
+async def test_post_never_hedges_even_when_slow(backend: SimpleNamespace) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.05)])
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(
             min_delay=0.0, warmup_delay=0.001, warmup_requests=5
         ),
     )
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.post("https://api.example.com/anything", json={})
     assert resp.status_code == 200
     assert inner.calls == 1
@@ -119,14 +137,18 @@ async def test_post_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
-async def test_latency_quantile_reflects_traffic_through_the_transport() -> None:
-    inner = ScriptedTransport([delayed_response(0.01)])
-    transport = HedgedTransport(inner=inner, default_config=HedgeConfig(min_delay=0.0))
+async def test_latency_quantile_reflects_traffic_through_the_transport(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.01)])
+    transport = backend.HedgedTransport(
+        inner=inner, default_config=HedgeConfig(min_delay=0.0)
+    )
     transport.register("GET", "/api/v1/search", EndpointConfig())
 
     assert transport.latency_quantile("endpoint:GET /api/v1/search", 0.9) is None
 
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         await client.get("https://api.example.com/api/v1/search")
 
     p90 = transport.latency_quantile("endpoint:GET /api/v1/search", 0.9)
@@ -135,9 +157,11 @@ async def test_latency_quantile_reflects_traffic_through_the_transport() -> None
     await transport.aclose()
 
 
-async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
-    inner = ScriptedTransport([delayed_response(0.05)])
-    transport = HedgedTransport(
+async def test_get_with_streamed_body_never_hedges_even_when_slow(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.05)])
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(
             min_delay=0.0, warmup_delay=0.001, warmup_requests=5
@@ -147,8 +171,10 @@ async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
     async def body() -> object:
         yield b"streamed"
 
-    request = httpx.Request("GET", "https://api.example.com/anything", content=body())
-    async with httpx.AsyncClient(transport=transport) as client:
+    request = backend.lib.Request(
+        "GET", "https://api.example.com/anything", content=body()
+    )
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.send(request)
     assert resp.status_code == 200
     # A hedge would have sent the same one-shot stream twice; the gate
@@ -160,16 +186,18 @@ async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
-async def test_websocket_handshake_never_hedges_even_when_slow() -> None:
-    inner = ScriptedTransport([delayed_response(0.05)])
-    transport = HedgedTransport(
+async def test_websocket_handshake_never_hedges_even_when_slow(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.05)])
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(
             min_delay=0.0, warmup_delay=0.001, warmup_requests=5
         ),
     )
     headers = {"Connection": "Upgrade", "Upgrade": "websocket"}
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         resp = await client.get("https://api.example.com/ws", headers=headers)
     assert resp.status_code == 200
     # A hedge would have opened a second upgraded connection.
@@ -180,15 +208,17 @@ async def test_websocket_handshake_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
-async def test_host_breaker_uses_transport_default_not_first_endpoint_touched() -> None:
-    inner = ScriptedTransport([failing(delay=0.0)])
+async def test_host_breaker_uses_transport_default_not_first_endpoint_touched(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([failing(delay=0.0)])
     aggressive = CircuitBreakerConfig(min_samples=1, error_rate_threshold=0.0)
-    transport = HedgedTransport(
+    transport = backend.HedgedTransport(
         inner=inner, default_config=HedgeConfig(min_delay=0.0)
     )  # default breaker: min_samples=20, so a single failure can't trip it
     transport.register("GET", "/aggressive", EndpointConfig(circuit_breaker=aggressive))
 
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         with pytest.raises(RuntimeError):
             await client.get("https://api.example.com/aggressive")
 
@@ -203,18 +233,18 @@ async def test_host_breaker_uses_transport_default_not_first_endpoint_touched() 
     await transport.aclose()
 
 
-async def test_circuit_breaker_opens_under_failures_and_primary_still_responds() -> (
-    None
-):
-    inner = ScriptedTransport([failing(delay=0.0)])
+async def test_circuit_breaker_opens_under_failures_and_primary_still_responds(
+    backend: SimpleNamespace,
+) -> None:
+    inner = backend.ScriptedTransport([failing(delay=0.0)])
     breaker = CircuitBreakerConfig(
         min_samples=2, error_rate_threshold=0.5, cooldown=60.0
     )
-    transport = HedgedTransport(
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(min_delay=0.0, circuit_breaker=breaker),
     )
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         for _ in range(2):
             with pytest.raises(RuntimeError):
                 await client.get("https://api.example.com/flaky")
@@ -226,18 +256,20 @@ async def test_circuit_breaker_opens_under_failures_and_primary_still_responds()
     await transport.aclose()
 
 
-async def test_on_circuit_open_callback_fires_with_scope_and_key() -> None:
+async def test_on_circuit_open_callback_fires_with_scope_and_key(
+    backend: SimpleNamespace,
+) -> None:
     events: list[tuple[str, str]] = []
-    inner = ScriptedTransport([failing(delay=0.0)])
+    inner = backend.ScriptedTransport([failing(delay=0.0)])
     breaker = CircuitBreakerConfig(
         min_samples=2, error_rate_threshold=0.5, cooldown=60.0
     )
-    transport = HedgedTransport(
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(min_delay=0.0, circuit_breaker=breaker),
         on_circuit_open=lambda scope, key: events.append((scope, key)),
     )
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         for _ in range(2):
             with pytest.raises(RuntimeError):
                 await client.get("https://api.example.com/flaky")
@@ -249,12 +281,12 @@ async def test_on_circuit_open_callback_fires_with_scope_and_key() -> None:
     await transport.aclose()
 
 
-async def test_on_hedge_fired_callback_fires_only_when_a_hedge_is_actually_sent() -> (
-    None
-):
+async def test_on_hedge_fired_callback_fires_only_when_a_hedge_is_actually_sent(
+    backend: SimpleNamespace,
+) -> None:
     fired: list[str] = []
-    inner = ScriptedTransport([delayed_response(0.05)])
-    transport = HedgedTransport(
+    inner = backend.ScriptedTransport([delayed_response(0.05)])
+    transport = backend.HedgedTransport(
         inner=inner,
         default_config=HedgeConfig(min_delay=0.0, warmup_delay=0.001),
         on_hedge_fired=fired.append,
@@ -264,7 +296,7 @@ async def test_on_hedge_fired_callback_fires_only_when_a_hedge_is_actually_sent(
         "GET", "/slow", EndpointConfig(hedge_delay=0.001)
     )  # always hedges
 
-    async with httpx.AsyncClient(transport=transport) as client:
+    async with backend.lib.AsyncClient(transport=transport) as client:
         await client.get("https://api.example.com/fast")
         await client.get("https://api.example.com/slow")
 
@@ -272,14 +304,14 @@ async def test_on_hedge_fired_callback_fires_only_when_a_hedge_is_actually_sent(
     await transport.aclose()
 
 
-async def test_aclose_closes_inner_transport() -> None:
-    inner = ScriptedTransport([delayed_response(0.0)])
+async def test_aclose_closes_inner_transport(backend: SimpleNamespace) -> None:
+    inner = backend.ScriptedTransport([delayed_response(0.0)])
     closed = {"value": False}
 
     async def aclose() -> None:
         closed["value"] = True
 
     inner.aclose = aclose  # type: ignore[method-assign]
-    transport = HedgedTransport(inner=inner)
+    transport = backend.HedgedTransport(inner=inner)
     await transport.aclose()
     assert closed["value"] is True
