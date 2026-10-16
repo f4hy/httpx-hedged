@@ -5,7 +5,7 @@ routes of very different latency/RPS profiles (e.g. ``GET /api/v1/foo`` vs.
 ``GET /api/v1/bar``) would have all of their latencies mixed into one
 sketch. This module lets callers register per-route ``EndpointConfig``
 objects up front, matched against every request's method and path, all
-still funneled through a single ``httpx.AsyncBaseTransport`` / connection
+still funneled through a single inner transport / connection
 pool, so supporting many endpoints does not multiply connection pools the
 way ``httpx`` ``mounts={}`` would.
 """
@@ -15,9 +15,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import httpx
-
 from httpx_hedged._config import EndpointConfig
+from httpx_hedged._protocols import RequestLike
 
 _SEGMENT_PARAM_RE = re.compile(r"^\{[A-Za-z_]\w*\}$")
 
@@ -95,7 +94,7 @@ class EndpointMatcher:
         self._by_name[resolved_name] = compiled
         return resolved_name
 
-    def match(self, request: httpx.Request) -> Route | None:
+    def match(self, request: RequestLike) -> Route | None:
         """Match a request to a registered route.
 
         If the request carries ``extensions["hedge_endpoint"]``, that name
