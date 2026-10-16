@@ -21,26 +21,14 @@ request timeout on the inner transport is load-bearing here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-
 import httpx
 
-from httpx_hedged._config import HedgeConfig
-from httpx_hedged._matcher import Route
-from httpx_hedged._scheduler_sync import SyncHedgeScheduler
-from httpx_hedged.transport import (
-    _classify_for,
-    _HedgedTransportCore,
-    _resolve_request,
-)
+from httpx_hedged._core import SyncHedgingCore
 
 
-def _close_response(response: httpx.Response) -> None:
-    response.close()
-
-
-class SyncHedgedTransport(_HedgedTransportCore, httpx.BaseTransport):
+class SyncHedgedTransport(
+    SyncHedgingCore[httpx.Request, httpx.Response], httpx.BaseTransport
+):
     """An httpx sync transport that adds adaptive, per-endpoint hedged requests.
 
     Wraps a single inner transport (default: ``httpx.HTTPTransport()``, one
@@ -95,55 +83,5 @@ class SyncHedgedTransport(_HedgedTransportCore, httpx.BaseTransport):
             ``close()`` always closes ``inner`` too.
     """
 
-    _scheduler: SyncHedgeScheduler
-
-    def __init__(
-        self,
-        inner: httpx.BaseTransport | None = None,
-        default_config: HedgeConfig | None = None,
-        routes: list[Route] | None = None,
-        on_hedge_fired: Callable[[str], None] | None = None,
-        on_circuit_open: Callable[[str, str], None] | None = None,
-        max_workers: int | None = None,
-        executor: ThreadPoolExecutor | None = None,
-    ) -> None:
-        self._inner = inner or httpx.HTTPTransport()
-        self._init_core(default_config, on_circuit_open, routes)
-        self._scheduler = SyncHedgeScheduler(
-            self._health,
-            self._stats,
-            self._default_config.circuit_breaker,
-            on_hedge_fired=on_hedge_fired,
-            max_workers=max_workers,
-            executor=executor,
-        )
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        """Handle an outgoing request with adaptive, per-endpoint hedging."""
-        key, host, resolved, can_hedge = _resolve_request(
-            self._matcher, self._default_config, request
-        )
-
-        def do_request() -> httpx.Response:
-            return self._inner.handle_request(request)
-
-        return self._scheduler.execute_with_hedge(
-            key=key,
-            host=host,
-            config=resolved,
-            primary_func=do_request,
-            hedge_func=do_request,
-            classify=_classify_for(resolved),
-            can_hedge=can_hedge,
-            discard=_close_response,
-        )
-
-    def close(self) -> None:
-        """Close the transport, its thread pool, and the wrapped inner transport.
-
-        Blocks until any orphaned loser thread finishes; see the module
-        docstring: this can hang if a loser is blocked on a socket with no
-        timeout configured on the inner transport.
-        """
-        self._scheduler.close()
-        self._inner.close()
+    def _default_inner(self) -> httpx.BaseTransport:
+        return httpx.HTTPTransport()
