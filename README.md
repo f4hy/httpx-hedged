@@ -198,7 +198,9 @@ Only idempotent methods (`GET`, `HEAD`, `OPTIONS`) are ever hedged, to avoid
 duplicating side effects. A request with a body is also never hedged, even
 if the method is idempotent: the primary and hedge send the same
 `httpx.Request` object, and a body backed by a one-shot stream can't be
-safely read twice.
+safely read twice. A protocol upgrade request (one with an `Upgrade` header,
+such as a WebSocket handshake) is never hedged either, since a hedge would
+open a second upgraded connection.
 
 `SyncHedgedTransport` races primary and hedge on a thread pool instead of
 `asyncio` tasks. The "cancel" step is where the two genuinely diverge:
