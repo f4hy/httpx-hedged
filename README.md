@@ -1,11 +1,21 @@
 # httpx-hedged
 
-An [httpx](https://www.python-httpx.org/) transport that adds
+An [httpx](https://www.python-httpx.org/) (or
+[httpx2](https://github.com/pydantic/httpx2)) transport that adds
 adaptive, per-endpoint request hedging: fire a backup request when the
 primary is running slow, take whichever finishes first, cancel the
 loser. Based on Google's [The Tail at
 Scale](https://research.google/pubs/pub40801/) and modeled heavily on
 [hedge-python](https://github.com/sunhailin-Leo/hedge-python).
+
+## Installation
+
+Pick the extra for the HTTP library you use; neither is installed by default:
+
+```bash
+pip install "httpx-hedged[httpx]"    # for httpx
+pip install "httpx-hedged[httpx2]"   # for httpx2
+```
 
 ## Quick start
 
@@ -72,6 +82,32 @@ Limitations:
 > pool is exhausted.
 
 See "Race and cancel" below for the details.
+
+### httpx2
+
+[httpx2](https://github.com/pydantic/httpx2) is Pydantic's maintained fork
+of httpx. Its API is the same, but its classes are distinct from httpx's (an
+`httpx2.AsyncClient` rejects responses from an httpx connection pool), so
+it gets its own `HedgedTransport` and `SyncHedgedTransport`, with the same
+API, imported from `httpx_hedged.httpx2`:
+
+```python
+import httpx2
+from httpx_hedged import EndpointConfig
+from httpx_hedged.httpx2 import HedgedTransport  # or SyncHedgedTransport
+
+transport = HedgedTransport()  # inner defaults to httpx2.AsyncHTTPTransport()
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+
+async with httpx2.AsyncClient(transport=transport) as client:
+    response = await client.get("https://api.example.com/api/v1/fast-lookup")
+```
+
+Everything else in this README (configs, stats, health, hooks, the sync
+caveats above) applies unchanged. If your application calls
+`httpx2.alias_httpx()` (so that `import httpx` resolves to httpx2
+process-wide), it must do so before importing `httpx_hedged`; after that,
+the transports in either module work.
 
 ## Why per-endpoint?
 
