@@ -15,35 +15,21 @@ Usage::
 
 from __future__ import annotations
 
-from collections.abc import Callable
+try:
+    import httpx
+except ImportError as exc:  # pragma: no cover - exercised via subprocess test
+    raise ImportError(
+        "httpx_hedged.HedgedTransport requires httpx; install it with "
+        "`pip install httpx-hedged[httpx]`, or use "
+        "httpx_hedged.httpx2.HedgedTransport with httpx2"
+    ) from exc
 
-import httpx
-
-from httpx_hedged._config import EndpointConfig, HedgeConfig, resolve
-from httpx_hedged._health import HealthRegistry
-from httpx_hedged._matcher import EndpointMatcher, Route
-from httpx_hedged._scheduler import HedgeScheduler, extract_host
-from httpx_hedged._stats import StatsRegistry
-
-_IDEMPOTENT_METHODS = ("GET", "HEAD", "OPTIONS")
-
-
-def _has_body(request: httpx.Request) -> bool:
-    """Whether a request carries a body that a hedge can't safely re-send.
-
-    The primary and hedge both send the same ``httpx.Request`` object; a
-    body backed by a one-shot async stream (e.g. ``content=some_generator``)
-    would be consumed by whichever of the two reads it first, corrupting or
-    failing the other. Idempotent methods essentially never carry a body in
-    normal use, so this only ever changes behavior for that edge case.
-    """
-    content_length = request.headers.get("content-length")
-    if content_length not in (None, "0"):
-        return True
-    return request.headers.get("transfer-encoding", "").lower() == "chunked"
+from httpx_hedged._core import AsyncHedgingCore
 
 
-class HedgedTransport(httpx.AsyncBaseTransport):
+class HedgedTransport(
+    AsyncHedgingCore[httpx.Request, httpx.Response], httpx.AsyncBaseTransport
+):
     """An httpx async transport that adds adaptive, per-endpoint hedged requests.
 
     Wraps a single inner transport (default: ``httpx.AsyncHTTPTransport``,
@@ -78,116 +64,5 @@ class HedgedTransport(httpx.AsyncBaseTransport):
             example.
     """
 
-    def __init__(
-        self,
-        inner: httpx.AsyncBaseTransport | None = None,
-        default_config: HedgeConfig | None = None,
-        routes: list[Route] | None = None,
-        on_hedge_fired: Callable[[str], None] | None = None,
-        on_circuit_open: Callable[[str, str], None] | None = None,
-    ) -> None:
-        self._inner = inner or httpx.AsyncHTTPTransport()
-        self._default_config = default_config or HedgeConfig()
-        self._matcher = EndpointMatcher()
-        self._stats = StatsRegistry()
-        self._health = HealthRegistry(on_circuit_open=on_circuit_open)
-        self._scheduler = HedgeScheduler(
-            self._health,
-            self._stats,
-            self._default_config.circuit_breaker,
-            on_hedge_fired=on_hedge_fired,
-        )
-
-        for route in routes or []:
-            self.register(
-                route.method, route.path_pattern, route.config, name=route.name
-            )
-
-    def register(
-        self,
-        method: str,
-        path_pattern: str,
-        config: EndpointConfig,
-        *,
-        name: str | None = None,
-    ) -> str:
-        """Register a per-endpoint hedge config for a method + path pattern.
-
-        ``path_pattern`` segments may contain ``{name}`` placeholders or a
-        bare ``*`` to match any single path segment (e.g.
-        ``/api/v1/users/{id}``). Routes are matched in registration order,
-        first match wins, so register more specific patterns first.
-
-        Returns the resolved endpoint name (used as the key in ``stats``
-        and as the value for ``extensions={"hedge_endpoint": name}``).
-        """
-        return self._matcher.register(method, path_pattern, config, name=name)
-
-    @property
-    def stats(self) -> StatsRegistry:
-        """Per-endpoint and aggregate hedge statistics."""
-        return self._stats
-
-    @property
-    def health(self) -> HealthRegistry:
-        """Host- and endpoint-level circuit breaker state."""
-        return self._health
-
-    def latency_quantile(self, key: str, q: float) -> float | None:
-        """Return the current estimated latency (seconds) at quantile ``q``
-        for a tracked key, or None if nothing has been recorded for that
-        key yet.
-
-        ``key`` uses the same ``"endpoint:<name>"`` / ``"host:<hostname>"``
-        format as ``stats`` and ``health``. For example, after
-        ``name = transport.register("GET", "/search", ...)``, query it with
-        ``transport.latency_quantile(f"endpoint:{name}", 0.9)`` for the
-        current learned p90::
-
-            p90 = transport.latency_quantile(f"endpoint:{name}", 0.9)
-            if p90 is not None:
-                print(f"{name} p90: {p90 * 1000:.1f}ms")
-        """
-        return self._scheduler.latency_quantile(key, q)
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        """Handle an outgoing request with adaptive, per-endpoint hedging."""
-        host = extract_host(str(request.url))
-        route = self._matcher.match(request)
-
-        if route is not None:
-            key = f"endpoint:{route.name}"
-            resolved = resolve(route.config, self._default_config)
-        else:
-            key = f"host:{host}"
-            resolved = resolve(None, self._default_config)
-
-        can_hedge = request.method.upper() in _IDEMPOTENT_METHODS and not _has_body(
-            request
-        )
-        treat_5xx_as_failure = resolved.circuit_breaker.treat_5xx_as_failure
-
-        async def do_request() -> httpx.Response:
-            return await self._inner.handle_async_request(request)
-
-        def classify(response: httpx.Response) -> bool:
-            return not (treat_5xx_as_failure and response.status_code >= 500)
-
-        async def discard(response: httpx.Response) -> None:
-            await response.aclose()
-
-        return await self._scheduler.execute_with_hedge(
-            key=key,
-            host=host,
-            config=resolved,
-            primary_func=do_request,
-            hedge_func=do_request,
-            classify=classify,
-            can_hedge=can_hedge,
-            discard=discard,
-        )
-
-    async def aclose(self) -> None:
-        """Close the transport and the wrapped inner transport."""
-        self._scheduler.close()
-        await self._inner.aclose()
+    def _default_inner(self) -> httpx.AsyncBaseTransport:
+        return httpx.AsyncHTTPTransport()

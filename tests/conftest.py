@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Awaitable, Callable
 
@@ -51,6 +52,59 @@ class ScriptedTransport(httpx.AsyncBaseTransport):
         return await behavior(request)
 
     async def aclose(self) -> None:
+        return None
+
+
+SyncBehavior = Callable[[httpx.Request], httpx.Response]
+
+
+def sync_delayed_response(delay: float, status_code: int = 200) -> SyncBehavior:
+    """A behavior that sleeps ``delay`` seconds then returns a response."""
+
+    def behavior(request: httpx.Request) -> httpx.Response:
+        if delay:
+            time.sleep(delay)
+        return httpx.Response(status_code, request=request)
+
+    return behavior
+
+
+def sync_failing(
+    delay: float = 0.0, exc: type[Exception] = RuntimeError
+) -> SyncBehavior:
+    """A behavior that sleeps ``delay`` seconds then raises."""
+
+    def behavior(request: httpx.Request) -> httpx.Response:
+        if delay:
+            time.sleep(delay)
+        raise exc("simulated failure")
+
+    return behavior
+
+
+class SyncScriptedTransport(httpx.BaseTransport):
+    """Sync counterpart to ``ScriptedTransport``.
+
+    Unlike the async version, ``handle_request`` is genuinely called from
+    concurrent OS threads (primary + hedge), so bookkeeping needs its own
+    lock; the async version gets that for free from the single-threaded
+    event loop, and copying its ``self.calls += 1`` here verbatim would be
+    a real data race.
+    """
+
+    def __init__(self, script: list[SyncBehavior]) -> None:
+        self.script = script
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        with self._lock:
+            index = min(self.calls, len(self.script) - 1)
+            behavior = self.script[index]
+            self.calls += 1
+        return behavior(request)
+
+    def close(self) -> None:
         return None
 
 

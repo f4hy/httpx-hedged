@@ -6,7 +6,7 @@ three different latency profiles.
 | File | What it is |
 |---|---|
 | `app.py` | A tiny FastAPI backend exposing `/fast`, `/slow`, and `/flaky` routes, each with a different latency profile. |
-| `example_usage.py` | A client that registers per-endpoint hedge config, drives load through `HedgedTransport` against `app.py`, and prints a stats/latency/circuit-breaker report. |
+| `example_usage.py` | A client that registers per-endpoint hedge config, drives load through `HedgedTransport` (or `SyncHedgedTransport` with `--sync`) against `app.py`, and prints a stats/latency/circuit-breaker report. |
 | `run_example.sh` | Installs deps, starts `app.py`, runs `example_usage.py` against it, and tears the server down. The easiest way to see the whole thing end to end. |
 
 ## Running it
@@ -14,7 +14,8 @@ three different latency profiles.
 From the repo root:
 
 ```bash
-./examples/run_example.sh
+./examples/run_example.sh          # async client (HedgedTransport)
+./examples/run_example.sh --sync   # sync client (SyncHedgedTransport)
 ```
 
 Or run the pieces yourself:
@@ -22,8 +23,12 @@ Or run the pieces yourself:
 ```bash
 uv sync --group examples
 uv run uvicorn examples.app:app --host 127.0.0.1 --port 8000 &
-uv run python examples/example_usage.py
+uv run python examples/example_usage.py          # or --sync
 ```
+
+Both modes drive identical load (same routes, request counts, and
+concurrency; the sync mode uses a thread pool where the async mode uses
+`asyncio.gather`) and print the same report at the end.
 
 ## What to look for in the output
 

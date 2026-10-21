@@ -1,11 +1,21 @@
 # httpx-hedged
 
-An [httpx](https://www.python-httpx.org/) transport that adds
+An [httpx](https://www.python-httpx.org/) (or
+[httpx2](https://github.com/pydantic/httpx2)) transport that adds
 adaptive, per-endpoint request hedging: fire a backup request when the
 primary is running slow, take whichever finishes first, cancel the
 loser. Based on Google's [The Tail at
 Scale](https://research.google/pubs/pub40801/) and modeled heavily on
 [hedge-python](https://github.com/sunhailin-Leo/hedge-python).
+
+## Installation
+
+Pick the extra for the HTTP library you use; neither is installed by default:
+
+```bash
+pip install "httpx-hedged[httpx]"    # for httpx
+pip install "httpx-hedged[httpx2]"   # for httpx2
+```
 
 ## Quick start
 
@@ -30,6 +40,74 @@ breaker report), see [`examples/`](examples/README.md).
 With no configuration, `HedgedTransport` learns a p90 latency estimate per
 host (via a [DDSketch](https://arxiv.org/abs/2004.08604) quantile sketch)
 and fires a hedge request whenever the primary exceeds it. 
+
+### Sync clients
+
+`SyncHedgedTransport` is the same adaptive hedging (same `HedgeConfig`,
+`EndpointConfig`, stats, and circuit breaker) for a plain `httpx.Client`:
+
+```python
+import httpx
+from httpx_hedged import EndpointConfig, SyncHedgedTransport
+
+transport = SyncHedgedTransport()
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+
+with httpx.Client(transport=transport) as client:
+    response = client.get("https://api.example.com/data")
+    print(response.json())
+```
+
+> [!TIP]
+> Prefer the async `HedgedTransport` if you can. The sync version exists
+> for codebases where async isn't an option.
+
+Races run on a thread pool (`ThreadPoolExecutor`, default 200 workers,
+configurable via `max_workers=`/`executor=`), and a losing thread blocked
+on a socket read can't be cancelled the way an `asyncio` task can.
+Limitations:
+
+- **Threads per request**: the calling thread plus a pool worker, plus a
+  third during a hedge race, which scales worse than async at high
+  concurrency.
+- **Losers run to completion**, doing full duplicate backend work and
+  holding their pooled connection until they finish or time out.
+- **`close()` blocks** until every orphaned loser finishes.
+- **No shared state** with an async `HedgedTransport` hitting the same
+  backend.
+
+> [!WARNING]
+> A request timeout is mandatory with `SyncHedgedTransport`: a losing
+> request can't be interrupted, and hung losers pile up until the thread
+> pool is exhausted.
+
+See "Race and cancel" below for the details.
+
+### httpx2
+
+[httpx2](https://github.com/pydantic/httpx2) is Pydantic's maintained fork
+of httpx. Its API is the same, but its classes are distinct from httpx's (an
+`httpx2.AsyncClient` rejects responses from an httpx connection pool), so
+it gets its own `HedgedTransport` and `SyncHedgedTransport`, with the same
+API, imported from `httpx_hedged.httpx2`:
+
+```python
+import httpx2
+from httpx_hedged import EndpointConfig
+from httpx_hedged.httpx2 import HedgedTransport  # or SyncHedgedTransport
+
+transport = HedgedTransport()  # inner defaults to httpx2.AsyncHTTPTransport()
+transport.register("GET", "/api/v1/fast-lookup", EndpointConfig(percentile=0.90))
+
+async with httpx2.AsyncClient(transport=transport) as client:
+    response = await client.get("https://api.example.com/api/v1/fast-lookup")
+```
+
+Everything else in this README (configs, stats, health, hooks, the sync
+caveats above) applies unchanged. If your application calls
+`httpx2.alias_httpx()` (so that `import httpx` resolves to httpx2
+process-wide), it must do so before importing `httpx_hedged`; after that,
+the transports in either module work.
 
 ## Why per-endpoint?
 
@@ -156,7 +234,23 @@ Only idempotent methods (`GET`, `HEAD`, `OPTIONS`) are ever hedged, to avoid
 duplicating side effects. A request with a body is also never hedged, even
 if the method is idempotent: the primary and hedge send the same
 `httpx.Request` object, and a body backed by a one-shot stream can't be
-safely read twice.
+safely read twice. A protocol upgrade request (one with an `Upgrade` header,
+such as a WebSocket handshake) is never hedged either, since a hedge would
+open a second upgraded connection.
+
+`SyncHedgedTransport` races primary and hedge on a thread pool instead of
+`asyncio` tasks. The "cancel" step is where the two genuinely diverge:
+`asyncio.Task.cancel()` interrupts a coroutine at its next `await`, almost
+immediately, but there's no equivalent way to interrupt an OS thread blocked
+in a socket read. So the sync scheduler returns the winner's result right
+away without waiting on the loser, and the loser keeps running in the
+background until its blocking call finally returns on its own, at which
+point its result is discarded.
+
+> [!WARNING]
+> This makes a configured request timeout load-bearing for
+> `SyncHedgedTransport` specifically: without one, a losing request can
+> occupy its thread indefinitely.
 
 ### DDSketch quantile estimator
 
@@ -202,10 +296,11 @@ HALF_OPEN ──(trial requests mostly succeed)──▶ CLOSED
 HALF_OPEN ──(trial requests mostly fail)────▶ OPEN
 ```
 
-Note: health is recorded from the *winning* task's outcome only. A
-cancelled loser's real outcome is unknowable, and losers are cancelled
-deliberately (not doing so would defeat the point of reducing load on a
-struggling backend).
+> [!NOTE]
+> Health is recorded from the *winning* task's outcome only. A cancelled
+> loser's real outcome is unknowable, and losers are cancelled
+> deliberately (not doing so would defeat the point of reducing load on a
+> struggling backend).
 
 ## Observability
 
@@ -288,8 +383,9 @@ sent. `on_circuit_open` is called once per OPEN transition (not on every
 suppressed hedge while it stays open), so it's safe to wire straight into
 an alerting/paging pipeline without flooding it.
 
-Both callbacks run synchronously on the request path, so keep them fast
-(increment a counter, log a line); don't do network I/O in them directly.
+> [!IMPORTANT]
+> Both callbacks run synchronously on the request path, so keep them fast
+> (increment a counter, log a line); don't do network I/O in them directly.
 
 ## Relationship to hedge-python
 
