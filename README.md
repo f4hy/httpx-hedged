@@ -24,11 +24,13 @@ import asyncio
 import httpx
 from httpx_hedged import HedgedTransport
 
+
 async def main():
     transport = HedgedTransport()
     async with httpx.AsyncClient(transport=transport) as client:
         response = await client.get("https://api.example.com/data")
         print(response.json())
+
 
 asyncio.run(main())
 ```
@@ -355,7 +357,9 @@ def alert_on_circuit_open(scope: str, key: str) -> None:
     # scope is "host" or "endpoint"; key is the host name or endpoint key
     # that tripped. Fires exactly once per OPEN transition.
     logger.error(
-        "hedging circuit breaker OPEN: %s=%s is unhealthy, hedging suspended", scope, key
+        "hedging circuit breaker OPEN: %s=%s is unhealthy, hedging suspended",
+        scope,
+        key,
     )
 
 
