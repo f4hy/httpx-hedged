@@ -83,6 +83,7 @@ jobs:
           lib = importlib.import_module('${{ matrix.extra }}')
           shells = importlib.import_module('${{ matrix.module }}')
           assert importlib.util.find_spec('${{ matrix.absent }}') is None
+          exec('from httpx_hedged import *')  # must work with either extra alone
 
           def ok(request):
               return lib.Response(200)

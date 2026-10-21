@@ -21,6 +21,7 @@ transports are imported lazily on first access.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from typing import TYPE_CHECKING
 
 from httpx_hedged._config import CircuitBreakerConfig, EndpointConfig, HedgeConfig
@@ -30,8 +31,8 @@ from httpx_hedged._stats import Stats, StatsRegistry, StatsSnapshot
 from httpx_hedged._version import __version__
 
 if TYPE_CHECKING:
-    from httpx_hedged.sync_transport import SyncHedgedTransport
-    from httpx_hedged.transport import HedgedTransport
+    from httpx_hedged.sync_transport import SyncHedgedTransport as SyncHedgedTransport
+    from httpx_hedged.transport import HedgedTransport as HedgedTransport
 
 _LAZY = {
     "HedgedTransport": "httpx_hedged.transport",
@@ -45,15 +46,18 @@ __all__ = [
     "EndpointConfig",
     "HealthRegistry",
     "HedgeConfig",
-    "HedgedTransport",
     "Route",
     "Stats",
     "StatsRegistry",
     "StatsSnapshot",
-    "SyncHedgedTransport",
     "UnknownHedgeEndpointError",
     "__version__",
 ]
+
+# Only list the httpx transports for ``import *`` when httpx is importable, so
+# a star import still works on an httpx2-only install.
+if importlib.util.find_spec("httpx") is not None:
+    __all__ += ["HedgedTransport", "SyncHedgedTransport"]
 
 
 def __getattr__(name: str) -> object:
