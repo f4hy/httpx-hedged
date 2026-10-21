@@ -41,3 +41,60 @@ jobs:
 
       - name: Run Tests with Pytest
         run: uv run pytest -q
+
+  # Neither httpx nor httpx2 is a hard dependency, so check the built wheel
+  # installs and works with each extra alone (the dev group above has both).
+  install-single-backend:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - extra: httpx
+            module: httpx_hedged
+            absent: httpx2
+          - extra: httpx2
+            module: httpx_hedged.httpx2
+            absent: httpx
+      fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, so hatch-vcs can see tags
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Build wheel
+        run: uv build --wheel -o dist
+
+      - name: Install wheel with only the ${{ matrix.extra }} extra
+        run: |
+          uv venv /tmp/venv
+          uv pip install -p /tmp/venv "$(ls dist/*.whl)[${{ matrix.extra }}]"
+
+      - name: Smoke test
+        run: |
+          /tmp/venv/bin/python -I -c "
+          import asyncio, importlib, importlib.util
+          lib = importlib.import_module('${{ matrix.extra }}')
+          shells = importlib.import_module('${{ matrix.module }}')
+          assert importlib.util.find_spec('${{ matrix.absent }}') is None
+          exec('from httpx_hedged import *')  # must work with either extra alone
+
+          def ok(request):
+              return lib.Response(200)
+
+          async def main():
+              transport = shells.HedgedTransport(inner=lib.MockTransport(ok))
+              async with lib.AsyncClient(transport=transport) as client:
+                  assert (await client.get('https://example.com/')).status_code == 200
+
+          asyncio.run(main())
+          transport = shells.SyncHedgedTransport(inner=lib.MockTransport(ok))
+          with lib.Client(transport=transport) as client:
+              assert client.get('https://example.com/').status_code == 200
+          "

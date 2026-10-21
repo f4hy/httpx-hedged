@@ -15,7 +15,14 @@ Usage::
 
 from __future__ import annotations
 
-import httpx
+try:
+    import httpx
+except ImportError as exc:  # pragma: no cover - exercised via subprocess test
+    raise ImportError(
+        "httpx_hedged.HedgedTransport requires httpx; install it with "
+        "`pip install httpx-hedged[httpx]`, or use "
+        "httpx_hedged.httpx2.HedgedTransport with httpx2"
+    ) from exc
 
 from httpx_hedged._core import AsyncHedgingCore
 
