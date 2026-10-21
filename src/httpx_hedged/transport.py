@@ -44,6 +44,17 @@ def _has_body(request: httpx.Request) -> bool:
     return request.headers.get("transfer-encoding", "").lower() == "chunked"
 
 
+def _is_upgrade(request: httpx.Request) -> bool:
+    """Whether a request asks to switch protocols (e.g. a WebSocket handshake).
+
+    A handshake is a plain ``GET``, so it passes the idempotency gate, but a
+    hedge would open a second upgraded connection rather than retry a
+    response. WebSocket clients such as ``httpx-ws`` send the handshake
+    through the client's transport, so it reaches this transport too.
+    """
+    return "upgrade" in request.headers
+
+
 def _resolve_request(
     matcher: EndpointMatcher, default_config: HedgeConfig, request: httpx.Request
 ) -> tuple[str, str, EffectiveConfig, bool]:
@@ -66,7 +77,11 @@ def _resolve_request(
         key = f"host:{host}"
         resolved = resolve(None, default_config)
 
-    can_hedge = request.method.upper() in _IDEMPOTENT_METHODS and not _has_body(request)
+    can_hedge = (
+        request.method.upper() in _IDEMPOTENT_METHODS
+        and not _has_body(request)
+        and not _is_upgrade(request)
+    )
     return key, host, resolved, can_hedge
 
 

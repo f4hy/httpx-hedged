@@ -160,6 +160,26 @@ async def test_get_with_streamed_body_never_hedges_even_when_slow() -> None:
     await transport.aclose()
 
 
+async def test_websocket_handshake_never_hedges_even_when_slow() -> None:
+    inner = ScriptedTransport([delayed_response(0.05)])
+    transport = HedgedTransport(
+        inner=inner,
+        default_config=HedgeConfig(
+            min_delay=0.0, warmup_delay=0.001, warmup_requests=5
+        ),
+    )
+    headers = {"Connection": "Upgrade", "Upgrade": "websocket"}
+    async with httpx.AsyncClient(transport=transport) as client:
+        resp = await client.get("https://api.example.com/ws", headers=headers)
+    assert resp.status_code == 200
+    # A hedge would have opened a second upgraded connection.
+    assert inner.calls == 1
+    snap = transport.stats.snapshot("host:api.example.com")
+    assert snap is not None
+    assert snap.hedged_requests == 0
+    await transport.aclose()
+
+
 async def test_host_breaker_uses_transport_default_not_first_endpoint_touched() -> None:
     inner = ScriptedTransport([failing(delay=0.0)])
     aggressive = CircuitBreakerConfig(min_samples=1, error_rate_threshold=0.0)
