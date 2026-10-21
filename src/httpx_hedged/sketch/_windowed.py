@@ -1,4 +1,10 @@
-"""WindowedSketch: sliding-window quantile estimation over DDSketch pairs."""
+"""WindowedSketch: sliding-window quantile estimation over DDSketch pairs.
+
+Uses the Rust-backed ``rddsketch`` package if it's installed (optional
+``httpx-hedged[rust]`` extra, Python 3.11+), otherwise falls back to the
+pure-Python ``ddsketch`` reference implementation. Both expose the same
+``add``/``get_quantile_value``/``merge``/``count`` interface used here.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,10 @@ import math
 import threading
 import time
 
-from ddsketch import DDSketch
+try:
+    from rddsketch import DDSketch  # type: ignore[import-not-found]
+except ImportError:
+    from ddsketch import DDSketch  # type: ignore[assignment]
 
 from httpx_hedged._rotation import RotateAction, next_action
 

@@ -1,4 +1,4 @@
-"""Sliding-window latency quantile tracking, built on the ``ddsketch`` package."""
+"""Sliding-window latency quantile tracking, built on ``ddsketch``/``rddsketch``."""
 
 from __future__ import annotations
 
