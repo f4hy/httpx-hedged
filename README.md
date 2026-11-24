@@ -1,5 +1,7 @@
 # httpx-hedged
 
+[![PyPI](https://img.shields.io/pypi/v/httpx-hedged)](https://pypi.org/project/httpx-hedged/)
+
 An [httpx](https://www.python-httpx.org/) (or
 [httpx2](https://github.com/pydantic/httpx2)) transport that adds
 adaptive, per-endpoint request hedging: fire a backup request when the
